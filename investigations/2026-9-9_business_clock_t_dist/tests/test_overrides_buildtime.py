@@ -142,6 +142,49 @@ def test_xi_cap_selects_the_fitted_register(base):
     assert m.ov.xi_cap_c == 2.0 and m.xi_cap_i is not None
 
 
+def test_filter_params_from_dict_maps_every_field_correctly():
+    """FilterParams.from_dict must pass keyword args, not six positionals into a
+    seven-field dataclass (w_spot, tau_s, delta_s, basis_hl_s, basis_hl_alt_s,
+    lag_s, p_stamp_late) - the old positional call shifted lag_s's value into
+    basis_hl_alt_s and p_stamp_late's value into lag_s, and never set
+    p_stamp_late at all."""
+    import json
+    from fvmodel.base import TABLES_DIR
+    from fvmodel.chainlink import FilterParams
+
+    d = json.load(open(TABLES_DIR / "print_model.json"))["filter"]["shipped"]
+    fp = FilterParams.from_dict(d)
+    assert fp.w_spot == pytest.approx(0.6)
+    assert fp.tau_s == pytest.approx(0.8447)
+    assert fp.delta_s == pytest.approx(0.7)
+    assert fp.p_stamp_late == pytest.approx(0.02)
+    assert fp.lag_s == 2
+    assert fp.basis_hl_alt_s == pytest.approx(15.0)
+
+
+def test_build_model_keeps_the_shipped_alt_tracker_half_life(base):
+    """basis_hl_alt_s must reach build_model() at its dataclass default (15.0):
+    Task 9's basis_alt variant scores the 15 s tracker NOTES E19 identified as the
+    constrained optimum, not whatever value from_dict's old positional bug left it
+    at."""
+    assert base.fp.basis_hl_alt_s == pytest.approx(15.0)
+
+
+def test_filter_params_round_trips_through_to_dict():
+    from fvmodel.chainlink import FilterParams
+
+    fp = FilterParams(w_spot=0.35, tau_s=0.9865, delta_s=0.70, basis_hl_s=901.0,
+                      basis_hl_alt_s=16.0, lag_s=3, p_stamp_late=0.05)
+    fp2 = FilterParams.from_dict(fp.to_dict())
+    assert fp2.w_spot == fp.w_spot
+    assert fp2.tau_s == fp.tau_s
+    assert fp2.delta_s == fp.delta_s
+    assert fp2.basis_hl_s == fp.basis_hl_s
+    assert fp2.basis_hl_alt_s == fp.basis_hl_alt_s
+    assert fp2.lag_s == fp.lag_s
+    assert fp2.p_stamp_late == fp.p_stamp_late
+
+
 def test_apply_overrides_does_not_mutate_the_input_model(base):
     """Two independent calls must not share mutable state through the base model."""
     from fvmodel.overrides import apply_overrides

@@ -408,14 +408,19 @@ class FilterParams:
 
     def to_dict(self) -> dict:
         return {"w_spot": self.w_spot, "tau_s": self.tau_s, "delta_s": self.delta_s,
-                "basis_hl_s": self.basis_hl_s, "lag_s": self.lag_s,
-                "p_stamp_late": self.p_stamp_late, "lambda_per_s": self.lam}
+                "basis_hl_s": self.basis_hl_s, "basis_hl_alt_s": self.basis_hl_alt_s,
+                "lag_s": self.lag_s, "p_stamp_late": self.p_stamp_late,
+                "lambda_per_s": self.lam}
 
     @classmethod
     def from_dict(cls, d: dict) -> "FilterParams":
-        return cls(float(d.get("w_spot", 0.0)), float(d.get("tau_s", 1.6)),
-                   float(d.get("delta_s", 0.2)), float(d.get("basis_hl_s", 900.0)),
-                   int(d.get("lag_s", 2)), float(d.get("p_stamp_late", 0.0)))
+        return cls(w_spot=float(d.get("w_spot", 0.0)),
+                   tau_s=float(d.get("tau_s", 1.6)),
+                   delta_s=float(d.get("delta_s", 0.2)),
+                   basis_hl_s=float(d.get("basis_hl_s", 900.0)),
+                   basis_hl_alt_s=float(d.get("basis_hl_alt_s", 15.0)),
+                   lag_s=int(d.get("lag_s", 2)),
+                   p_stamp_late=float(d.get("p_stamp_late", 0.0)))
 
 
 HIST = 16          # seconds of filter history kept, enough for any receive lag
