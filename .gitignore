@@ -1,0 +1,19 @@
+# data artefacts - large, rebuildable from scripts
+*.parquet
+*.csv.gz
+*.db
+*.db-shm
+*.db-wal
+*.npy
+
+# run outputs
+**/runs/
+**/out/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/

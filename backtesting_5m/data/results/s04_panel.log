@@ -1,0 +1,36 @@
+  archive: 15,700,935 bucketed quotes
+  tdb_old: 18,615,165 bucketed quotes
+  tdb_live: 2,447,991 bucketed quotes
+  dropping 328 single-bucket spikes (0.00152%)
+
+-- gate 1: cross-capture agreement, and token orientation
+     src  shared_buckets  agree_direct  agree_inverted  disagree_over_5c
+ tdb_old        13312262        0.8949          0.0186            0.0086
+tdb_live         1903150        0.9080          0.0207            0.0051
+
+-- gate 2: trading.db attribution by position in the window
+     src   window        n  disagree
+ tdb_old   5-290s 13265435    0.0675
+ tdb_old 290-300s    46827    0.0428
+tdb_live   5-290s  1901585    0.0553
+tdb_live 290-300s     1565    0.1035
+
+-- gate 3: duplicate (market, bucket) 0; bad t_ms 0
+-- gate 4: rows before the 60s-TWAP cutover 0; rows with no strike 0
+
+markets_listed                         7365
+markets_kept                           7111
+markets_dropped                         253
+rows                               20938352
+median_rows_per_market                 2940
+median_coverage                        0.98
+buckets_2plus_captures             13474725
+first_open              2026-08-14 00:05:00
+last_open               2026-09-08 13:45:00
+
+wrote C:\Users\kaima\Github2\Gambling104\backtesting_5m\data\book_5m_100ms.parquet
+reason
+no_open_10s             115
+no_close_10s             83
+coverage_below_90pct     30
+no_strike                25
