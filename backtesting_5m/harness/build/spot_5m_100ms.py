@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from harness import paths
+from harness.io import read_parquet
 
 MAX_PLAUSIBLE_OFFSET_S = 1.0     # anything larger is a broken clock
 SPOT_COL = "bn_spot_mid"
@@ -93,7 +94,7 @@ def build(days=None, out_path=None, panel_path=None):
     out_path = out_path or paths.SPOT
     panel_path = panel_path or paths.PANEL
 
-    panel = pd.read_parquet(panel_path, columns=["open_ts", "t_ms", "recv_ms"])
+    panel = read_parquet(panel_path, columns=["open_ts", "t_ms", "recv_ms"])
     panel["day"] = pd.to_datetime(panel["open_ts"], unit="s").dt.strftime(
         "%Y-%m-%d")
 
@@ -104,7 +105,7 @@ def build(days=None, out_path=None, panel_path=None):
 
     frames, offsets = [], []
     for day in days:
-        venue = pd.read_parquet(
+        venue = read_parquet(
             os.path.join(paths.VENUE_L1, f"date={day}"),
             columns=["ts", SPOT_COL, "bn_spot_bid_sz", "bn_spot_ask_sz"])
         venue = venue.dropna(subset=["ts", SPOT_COL]).sort_values("ts")

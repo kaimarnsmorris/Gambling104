@@ -10,6 +10,7 @@ import pandas as pd
 
 from harness import paths
 from harness.core.episode import build_episode
+from harness.io import read_parquet
 
 
 def settlement_map(strikes):
@@ -24,16 +25,16 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
     panel_path = panel_path or paths.PANEL
     strikes_path = strikes_path or paths.STRIKES
 
-    strikes = pd.read_parquet(strikes_path)
+    strikes = read_parquet(strikes_path)
     settle_by_open = settlement_map(strikes)
 
     filters = []
     if markets:
         filters.append(("market_id", "in", list(markets)))
-    panel = pd.read_parquet(panel_path,
-                            filters=filters or None,
-                            columns=["market_id", "open_ts", "t_ms",
-                                     "bid", "ask", "mid", "n_src"])
+    panel = read_parquet(panel_path,
+                         filters=filters or None,
+                         columns=["market_id", "open_ts", "t_ms",
+                                  "bid", "ask", "mid", "n_src"])
     panel["day"] = pd.to_datetime(panel["open_ts"], unit="s").dt.strftime(
         "%Y-%m-%d")
     if days:
@@ -41,10 +42,10 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
 
     spot = None
     if spot_path:
-        spot = pd.read_parquet(spot_path)
+        spot = read_parquet(spot_path)
     fair = None
     if fair_path:
-        fair = pd.read_parquet(fair_path)
+        fair = read_parquet(fair_path)
 
     strike_by_id = dict(zip(strikes["market_id"], strikes["strike"]))
 
