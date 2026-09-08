@@ -37,6 +37,7 @@ class ExecConfig:
     requote_every: int = 10             # decision indices between requotes
     min_tte_s: float = 0.0
     max_tte_s: float = 300.0
+    fill_params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

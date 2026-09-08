@@ -57,7 +57,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
         "execution": modules["execution"].decide,
         "fill": modules["fill"].resolve,
         "fees": modules["fees"].FeeSchedule(),
-        "fill_params": {},
+        "fill_params": dict(execn.fill_params),
     }
 
     selected = _select(episodes, sample)

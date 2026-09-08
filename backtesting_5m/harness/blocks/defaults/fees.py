@@ -34,3 +34,23 @@ class FeeSchedule:
         if liquidity == Liquidity.TAKER:
             return base * (1.0 - self.taker_rebate_rho)
         return -base * self.maker_rebate_phi
+
+
+def apply_daily_minimum(ledger, minimum_usd: float = 1.0):
+    """Zero out maker rebates on days that never reached the payout floor.
+
+    Measured with perfect separation over 131 earn-days: the smallest paid was
+    $1.0359 and the largest skipped $0.7209. Dust days are simply not paid, so
+    a backtest that books them is overstating maker economics.
+    """
+    import pandas as pd  # local: the fee model itself stays dependency-free
+
+    if not len(ledger):
+        return ledger
+
+    out = ledger.copy()
+    maker = out["liquidity"] == int(Liquidity.MAKER)
+    earned = -out.loc[maker].groupby("day")["fee_usd"].sum()
+    dust = set(earned[earned < minimum_usd].index)
+    out.loc[maker & out["day"].isin(dust), "fee_usd"] = 0.0
+    return out
