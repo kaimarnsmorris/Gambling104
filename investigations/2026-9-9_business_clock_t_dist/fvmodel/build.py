@@ -75,7 +75,11 @@ def build_model(eps_fit: str = "train", tails: dict = None,
         tl = {k: SettlementTail.from_dict(v)
               for k, v in json.load(open(TABLES_DIR / "tails.json")).items()}
 
-    return FairValueModel(Model(params), fp, eps, alpha, rho, cuts, tl, ivr, 0.0)
+    from .overrides import Overrides, apply_overrides
+
+    m = FairValueModel(Model(params), fp, eps, alpha, rho, cuts, tl, ivr)
+    m.v2.params = params          # apply_overrides needs the register half-lives
+    return apply_overrides(m, Overrides())
 
 
 # ------------------------------------------------------- the basis-drift variance

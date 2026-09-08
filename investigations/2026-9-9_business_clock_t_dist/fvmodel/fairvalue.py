@@ -87,14 +87,15 @@ class FairValueModel:
     act_cuts: tuple = (0.75, 1.25)               # activity-factor tercile cuts
     tails: dict = field(default_factory=dict)    # kind -> SettlementTail
     input_var_ratio: float = 1.0                 # Var(dlog X) / Var(dlog perp)
-    kappa_vol: float = 0.0                       # the single production override
     # The short-business-time cap on the forward curve (report 11.2). Off at 0.0.
     # Turning it on is a model change: it invalidates every fitted table downstream.
     xi_cap_c: float = 0.0
     xi_cap_i: int = None
+    ov: object = None                            # fvmodel.overrides.Overrides
 
-    def rho_for(self, act: float, mode: str = "conditional") -> np.ndarray:
-        if mode == "zero":
+    def rho_for(self, act: float, mode: str = None) -> np.ndarray:
+        mode = mode or (self.ov.rho_kernel if self.ov else "conditional")
+        if mode == "off":
             z = np.zeros(2)
             z[0] = 1.0
             return z
@@ -103,12 +104,7 @@ class FairValueModel:
         k = 0 if act < self.act_cuts[0] else (1 if act < self.act_cuts[1] else 2)
         return self.rho["act%d" % k]
 
-    def tail_for(self, kind: str, mode: str = "fitted") -> SettlementTail:
-        if mode == "normal":
-            return SettlementTail.normal(kind)
-        if mode == "v2_twap":
-            return self.tails.get("v2_twap") or self.tails.get(kind) \
-                or SettlementTail.normal(kind)
+    def tail_for(self, kind: str) -> SettlementTail:
         return self.tails.get(kind) or SettlementTail.normal(kind)
 
 
@@ -224,8 +220,9 @@ def fair_value(state, market: Market, model: FairValueModel,
 
     # ---- the variance of the return part ------------------------------------
     logv = np.log(np.maximum(state.v2.v, 1e-300))
-    if model.kappa_vol:
-        logv = logv + 2.0 * model.kappa_vol
+    kappa_vol = model.ov.kappa_vol if model.ov else 0.0
+    if kappa_vol:
+        logv = logv + 2.0 * kappa_vol
         v_state = state.v2.copy()
         v_state.v = np.exp(logv)
     else:
@@ -283,7 +280,7 @@ def fair_value(state, market: Market, model: FairValueModel,
     # ---- the tail ------------------------------------------------------------
     D = float(dT_at(model.v2, v_state, t, np.array([n]))[0])
     z = float(np.log(max(D, 1e-12)))
-    tail = model.tail_for(kind, sw.tail_mode)
+    tail = model.tail_for(kind)
     nu, mu, sg = tail.params(z)
     p_up = float(tail.prob_up(y_star, var_y, z))
 

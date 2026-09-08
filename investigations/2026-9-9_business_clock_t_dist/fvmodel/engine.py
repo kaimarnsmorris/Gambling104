@@ -289,8 +289,9 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
 
     # ---- variance -------------------------------------------------------------
     logv = win.logv_at(it_q)
-    if model.kappa_vol:
-        logv = logv + 2.0 * model.kappa_vol
+    kappa_vol = model.ov.kappa_vol if model.ov else 0.0
+    if kappa_vol:
+        logv = logv + 2.0 * kappa_vol
     m_blk = block_length(kind if sw.composed_weights else "perp_twap", n_q, Lw, PAD)
     iv_head, xi = win.clock.forward_block(logv, it_q, n_q, m_blk,
                                           cap_c=model.xi_cap_c,
@@ -362,7 +363,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
 
     D = win.clock.dT_at(it_q, np.array([n_q]))[:, 0]
     z = np.log(np.maximum(D, 1e-12))
-    tail = model.tail_for(kind, sw.tail_mode)
+    tail = model.tail_for(kind)
     p_up = tail.prob_up(y_star, var_y, z)
     up = settle > strike
 

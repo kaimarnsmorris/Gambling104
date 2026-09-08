@@ -71,13 +71,24 @@ def load(variant: str | None = None) -> Loaded:
     `variant` is a name under variants/; None means the defaults in model.json.
     """
     from .build import build_model
+    from .overrides import Overrides, apply_overrides
 
     cfg = read_config()
     verify(cfg)
-    model = build_model()
+    d = {k: v for k, v in cfg["overrides"].items() if k not in ("version", "source")}
+    notes = ""
+    if variant and variant != "baseline":
+        from .variants import read_variant      # Task 9; imported lazily so that
+        v = read_variant(variant)               # config.load works before it exists
+        d.update(v["overrides"])
+        notes = v.get("notes", "")
+    ov = Overrides.from_dict(d)
+    model = apply_overrides(build_model(), ov)
     prov = {"model_version": cfg["version"],
             "overrides_version": cfg["overrides"]["version"],
             "params_version": cfg["base"]["params_version"],
             "variant": variant or "baseline",
+            "overrides_non_default": ov.non_default(),
+            "label": ov.label(), "notes": notes,
             "tables": {k: v["sha256"][:12] for k, v in cfg["tables"].items()}}
-    return Loaded(model=model, overrides=None, provenance=prov, cfg=cfg)
+    return Loaded(model=model, overrides=ov, provenance=prov, cfg=cfg)
