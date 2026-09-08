@@ -746,16 +746,23 @@ git commit -m "feat(harness): latency model with the 250 ms taker lock as a floo
 ## Task 4: Quote construction — f, link, and the three-layer algebra
 
 **Files:**
-- Create: `harness/core/config.py`, `harness/blocks/defaults/f.py`, `harness/blocks/defaults/link.py`, `harness/blocks/defaults/quote.py`
+- Create: `harness/core/config.py`, `harness/blocks/defaults/f.py`, `harness/blocks/defaults/link.py`, `harness/blocks/defaults/quote.py`, `harness/blocks/defaults/fair.py`, `harness/blocks/defaults/vol.py`
 - Test: `harness/tests/test_quote.py`
 
 **Interfaces:**
 - Consumes: `harness.paths.TICK`.
 - Produces:
   - `QuoteParams(e_s=0.0, e_z=0.0, e_p=0.0, rpl_s=0.0, rpl_z=0.0, rpl_p=0.0, max_pos=0.0, tick=0.01)`.
+  - `ExecConfig`, `Sample`, `Output` (see the code below for fields).
   - `f.standardise(level: float, strike: float, sigma: float) -> float`.
   - `link.link(z: float) -> float`.
   - `quote.quotes(s_i, q, strike, sigma_i, params, standardise, link) -> tuple[float, float]`.
+  - `fair.precompute(ep) -> np.ndarray`, `vol.precompute(ep) -> np.ndarray`.
+
+> `fair.py` and `vol.py` carry no tests in this task. They are the remaining two
+> default block files, and Task 8 hashes every slot in `SLOTS` — which includes
+> `fair` and `vol` — so both files must exist before Task 8 runs. Their behaviour
+> is exercised by Task 10's `test_run.py`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -991,10 +998,59 @@ def quotes(s_i, q, strike, sigma_i, params, standardise, link):
     return eff_bid, eff_ask
 ```
 
+Create `harness/blocks/defaults/fair.py`:
+
+```python
+"""s -- the expected settling TWAP, in USD.
+
+The harness does NOT own the fair value. This default reads the column the
+Gambling102 export supplies. If it is absent the run stops here rather than
+quietly scoring a model that does not exist.
+
+For plumbing tests before the export lands, use
+`harness/blocks/placeholders/fair_flat.py`.
+"""
+import numpy as np
+
+
+def precompute(ep):
+    s = np.asarray(ep.s, dtype="float64")
+    if not np.isfinite(s).any():
+        raise ValueError(
+            f"{ep.market_id}: no fair value. Supply a fair export, or drop a "
+            f"fair.py into the investigation folder.")
+    return s
+```
+
+Create `harness/blocks/defaults/vol.py`:
+
+```python
+"""sigma -- the scale that turns (s - strike) into a standardised distance.
+
+Default is a square-root-of-time scaling of a single per-market constant. It
+is a stand-in with the right shape; override it with a real vol block.
+"""
+import numpy as np
+
+
+SIGMA_AT_300S = 250.0      # USD of BTC, one standard deviation over 300 s
+
+
+def precompute(ep):
+    tte = np.maximum(np.array([ep.tte_s(i) for i in range(len(ep))]), 1e-6)
+    return SIGMA_AT_300S * np.sqrt(tte / 300.0)
+```
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest harness/tests/test_quote.py -q`
 Expected: PASS, 9 passed
+
+`fair.py` and `vol.py` add no tests here by design — see the note under
+Interfaces. Confirm they at least import cleanly:
+
+Run: `python -c "from harness.blocks.defaults import fair, vol; print('ok')"`
+Expected: `ok`
 
 - [ ] **Step 5: Commit**
 
@@ -2213,9 +2269,15 @@ from harness.core import stats
 
 
 def _markets(pnl, days=None, shares=10.0):
+    """Default day labels are CONTIGUOUS blocks of ten markets.
+
+    Cycling labels would spread any mutation across every day, so a test that
+    flips the last third of markets would leave every period's mean unchanged
+    and the sign gate could never fail. Blocks keep calendar order meaningful.
+    """
     pnl = np.asarray(pnl, dtype="float64")
     if days is None:
-        days = [f"2026-08-{14 + i % 10:02d}" for i in range(len(pnl))]
+        days = [f"day-{i // 10:03d}" for i in range(len(pnl))]
     return pd.DataFrame({"day": days, "pnl_net": pnl,
                          "shares": np.full(len(pnl), shares),
                          "n_fills": np.ones(len(pnl))})
@@ -2435,13 +2497,12 @@ git commit -m "feat(harness): day-blocked bootstrap and the four discipline gate
 ## Task 10: The run() orchestrator, sample selection, plots
 
 **Files:**
-- Create: `harness/core/plots.py`, `harness/core/run.py`, `harness/blocks/defaults/fair.py`, `harness/blocks/defaults/vol.py`, `harness/blocks/placeholders/fair_flat.py`
+- Create: `harness/core/plots.py`, `harness/core/run.py`, `harness/blocks/placeholders/fair_flat.py`
 - Test: `harness/tests/test_run.py`
 
 **Interfaces:**
-- Consumes: Tasks 1–9.
+- Consumes: Tasks 1–9. In particular `fair.precompute(ep) -> np.ndarray` and `vol.precompute(ep) -> np.ndarray`, both already created in Task 4 — do NOT recreate them.
 - Produces: `run(investigation_dir, quote, execn, sample, output, episodes) -> dict` writing a full run folder; `plots.cumulative_pnl(markets, path)`.
-- Block contracts: `fair.precompute(ep) -> np.ndarray`, `vol.precompute(ep) -> np.ndarray`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2559,30 +2620,6 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'harness.core.run'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `harness/blocks/defaults/fair.py`:
-
-```python
-"""s -- the expected settling TWAP, in USD.
-
-The harness does NOT own the fair value. This default reads the column the
-Gambling102 export supplies. If it is absent the run stops here rather than
-quietly scoring a model that does not exist.
-
-For plumbing tests before the export lands, use
-`harness/blocks/placeholders/fair_flat.py`.
-"""
-import numpy as np
-
-
-def precompute(ep):
-    s = np.asarray(ep.s, dtype="float64")
-    if not np.isfinite(s).any():
-        raise ValueError(
-            f"{ep.market_id}: no fair value. Supply a fair export, or drop a "
-            f"fair.py into the investigation folder.")
-    return s
-```
-
 Create `harness/blocks/placeholders/fair_flat.py`:
 
 ```python
@@ -2596,25 +2633,6 @@ import numpy as np
 
 def precompute(ep):
     return np.full(len(ep), ep.strike, dtype="float64")
-```
-
-Create `harness/blocks/defaults/vol.py`:
-
-```python
-"""sigma -- the scale that turns (s - strike) into a standardised distance.
-
-Default is a square-root-of-time scaling of a single per-market constant. It
-is a stand-in with the right shape; override it with a real vol block.
-"""
-import numpy as np
-
-
-SIGMA_AT_300S = 250.0      # USD of BTC, one standard deviation over 300 s
-
-
-def precompute(ep):
-    tte = np.maximum(np.array([ep.tte_s(i) for i in range(len(ep))]), 1e-6)
-    return SIGMA_AT_300S * np.sqrt(tte / 300.0)
 ```
 
 Create `harness/core/plots.py`:
