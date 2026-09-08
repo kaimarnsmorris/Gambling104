@@ -21,8 +21,11 @@ if __name__ == "__main__":
         sample=Sample(),
         output=Output(seeds=(0, 1, 2)),
         episodes=episodes,
-        # fingerprinted into manifest.json, so the run folder
-        # still says which data it read
+        # EVERY data file this run reads, fingerprinted into manifest.json
+        # so the run folder still says which data it read. `load_episodes`
+        # reads the panel and the strikes always, and the spot and the fair
+        # export only when it is given a path for them -- so add paths.SPOT
+        # here the moment you pass spot_path above.
         inputs=(paths.PANEL, paths.STRIKES),
     )
     print(result["run_dir"])

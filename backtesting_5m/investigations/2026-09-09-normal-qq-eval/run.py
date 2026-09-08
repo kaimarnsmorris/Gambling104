@@ -36,6 +36,13 @@ SPOT_DAYS = ("2026-08-19", "2026-08-20", "2026-08-21",
 
 QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 
+#: EVERY data file this investigation reads, fingerprinted into each run's
+#: manifest.json. `load_episodes` is called with an explicit spot path and
+#: takes the panel and the strikes from their defaults, so all three are read
+#: -- and the panel is the primary data behind every number here. Listing only
+#: the spot left the book these results were traded against unrecorded.
+INPUTS = (paths.PANEL, paths.STRIKES, paths.SPOT)
+
 SWEEP_SAMPLE_SIZE = 450
 SWEEP_SEED_RNG = 20260909
 
@@ -55,7 +62,7 @@ def main():
         sample=sample,
         output=Output(seeds=(0, 1, 2), plots=True),
         episodes=episodes,
-        inputs=(paths.SPOT,),
+        inputs=INPUTS,
     )
     print(f"headline: {time.time()-t1:.1f}s -> {headline['run_dir']}")
     print(headline["summary"]["headline"])
@@ -77,7 +84,7 @@ def main():
         sample=sample,
         output=Output(seeds=(0,), plots=False),
         episodes=sweep_episodes,
-        inputs=(paths.SPOT,),
+        inputs=INPUTS,
     )
     print(f"sweeps: {time.time()-t2:.1f}s -> {sweep_res['run_dir']}")
     results["sweeps"] = sweep_res
@@ -101,7 +108,7 @@ def main():
         output=Output(emit_ticks=True, tick_markets=tuple(chosen),
                       seeds=(0,), plots=False),
         episodes=detail_episodes,
-        inputs=(paths.SPOT,),
+        inputs=INPUTS,
     )
     print(f"detail (ticks): {time.time()-t3:.1f}s -> {detail_res['run_dir']}")
     results["detail"] = detail_res
