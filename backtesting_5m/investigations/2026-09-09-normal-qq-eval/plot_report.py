@@ -1,0 +1,265 @@
+"""The full plot set for the normal-QQ model evaluation.
+
+Reads the run folders recorded in `last_run_manifest.json` (written by
+`run.py`) and writes every figure as a PNG into the maker headline run
+folder, which is treated as the report's home directory.
+
+    1. cumulative net PnL over the ordered market sequence, day boundaries
+       marked
+    2. per-market detail for 4 randomly-chosen traded markets: book/fair/
+       eff quotes with fill markers, position, mark-to-market PnL
+    3. markout (delta_quality_c) distribution, maker vs taker
+    4. PnL-proxy and fill count by time-to-expiry bucket
+    5. calibration: fair_p at fill time vs realised outcome frequency
+"""
+import json
+import os
+import sys
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt          # noqa: E402
+import numpy as np                        # noqa: E402
+import pandas as pd                       # noqa: E402
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+
+from harness.io import read_parquet                        # noqa: E402
+from harness.core.provenance import load_slot, resolve_slots  # noqa: E402
+from harness.build.episodes import load_episodes           # noqa: E402
+from harness import paths                                   # noqa: E402
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+BUY_MARKER = dict(marker="^", color="tab:green", s=28, zorder=5, label="buy")
+SELL_MARKER = dict(marker="v", color="tab:red", s=28, zorder=5, label="sell")
+
+
+def _load_run(run_dir):
+    out = {"run_dir": run_dir}
+    out["markets"] = read_parquet(os.path.join(run_dir, "markets.parquet"))
+    out["ledger"] = read_parquet(os.path.join(run_dir, "ledger.parquet"))
+    tick_path = os.path.join(run_dir, "ticks.parquet")
+    out["ticks"] = (read_parquet(tick_path) if os.path.exists(tick_path)
+                    else pd.DataFrame())
+    with open(os.path.join(run_dir, "summary.json")) as fh:
+        out["summary"] = json.load(fh)
+    return out
+
+
+# -- 1. cumulative net PnL, day boundaries marked ---------------------------
+
+def plot_cumulative_pnl(markets, path, title):
+    m = markets[markets["seed"] == markets["seed"].iloc[0]].sort_values(
+        "open_ts").reset_index(drop=True)
+    cum = m["pnl_net"].fillna(0.0).cumsum()
+
+    fig, ax = plt.subplots(figsize=(10, 4.2))
+    ax.plot(range(len(m)), cum, lw=1.2, color="tab:blue")
+    ax.axhline(0.0, color="0.6", lw=0.8)
+
+    day_changes = m.index[m["day"] != m["day"].shift(1)].tolist()
+    for pos, i in enumerate(day_changes):
+        ax.axvline(i, color="0.85", lw=0.8, zorder=0)
+        if pos < len(day_changes):
+            ax.text(i, ax.get_ylim()[1], m.loc[i, "day"], rotation=90,
+                    fontsize=7, va="top", ha="right", color="0.4")
+
+    ax.set_xlabel("market (chronological)")
+    ax.set_ylabel("cumulative net PnL, USD")
+    ax.set_title(title)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+# -- 2. per-market detail ----------------------------------------------------
+
+def plot_market_detail(ticks, ledger, market_id, path):
+    t = ticks[ticks["market_id"] == market_id].sort_values("t_ms")
+    if not len(t):
+        return False
+    tte_s = 300.0 - t["t_ms"].to_numpy() / 1000.0
+
+    fills = ledger[ledger["market_id"] == market_id].sort_values("t_ms")
+    fill_tte = 300.0 - fills["t_ms"].to_numpy() / 1000.0
+
+    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True,
+                             gridspec_kw={"height_ratios": [2.2, 1, 1]})
+
+    ax = axes[0]
+    ax.plot(tte_s, t["book_bid"], color="0.6", lw=0.8, label="book bid")
+    ax.plot(tte_s, t["book_ask"], color="0.6", lw=0.8, ls="--",
+           label="book ask")
+    ax.plot(tte_s, t["mid"], color="0.3", lw=0.8, label="mid")
+    ax.plot(tte_s, t["fair_p"], color="tab:blue", lw=1.3, label="fair_p")
+    ax.plot(tte_s, t["eff_bid"], color="tab:orange", lw=1.0, label="eff_bid")
+    ax.plot(tte_s, t["eff_ask"], color="tab:purple", lw=1.0, label="eff_ask")
+
+    buys = fills[fills["side"] == 1]
+    sells = fills[fills["side"] == -1]
+    if len(buys):
+        ax.scatter(300.0 - buys["t_ms"] / 1000.0, buys["price"], **BUY_MARKER)
+    if len(sells):
+        ax.scatter(300.0 - sells["t_ms"] / 1000.0, sells["price"],
+                  **SELL_MARKER)
+
+    ax.set_ylabel("probability")
+    ax.set_title(f"...{market_id[-12:]}: quotes, fair value and fills",
+                fontsize=10)
+    ax.legend(fontsize=7, ncol=3, loc="upper left")
+
+    axes[1].plot(tte_s, t["q"], color="tab:blue", lw=1.0)
+    axes[1].axhline(0.0, color="0.6", lw=0.6)
+    axes[1].set_ylabel("position q")
+
+    axes[2].plot(tte_s, t["cum_pnl"], color="tab:green", lw=1.0)
+    axes[2].axhline(0.0, color="0.6", lw=0.6)
+    axes[2].set_ylabel("mark-to-market PnL, USD")
+    axes[2].set_xlabel("seconds to expiry")
+
+    for ax in axes:
+        ax.invert_xaxis()
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+    return True
+
+
+# -- 3. markout distribution --------------------------------------------------
+
+def plot_markout(ledger_maker, ledger_taker, path):
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    bins = np.linspace(-30, 30, 61)
+    for label, ledger, color in (("maker", ledger_maker, "tab:blue"),
+                                 ("taker", ledger_taker, "tab:orange")):
+        dq = ledger["delta_quality_c"].dropna()
+        if not len(dq):
+            continue
+        ax.hist(dq.clip(-30, 30), bins=bins, alpha=0.5, density=True,
+               color=color, label=f"{label} (n={len(dq)})")
+        ax.axvline(dq.mean(), color=color, lw=1.6, ls="--")
+
+    ax.axvline(0.0, color="0.3", lw=0.8)
+    ax.set_xlabel("markout, delta_quality_c (cents/share, +10s or settlement)")
+    ax.set_ylabel("density")
+    ax.set_title("Markout distribution by liquidity")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+# -- 4. PnL-proxy and fill count by time-to-expiry bucket --------------------
+
+def plot_by_tte_bucket(ledger, path, bucket_s=30.0):
+    if not len(ledger):
+        return
+    tte = 300.0 - ledger["t_ms"] / 1000.0
+    bucket = (tte // bucket_s * bucket_s).astype(int)
+    ledger = ledger.assign(tte_bucket=bucket,
+                          pnl_proxy_usd=ledger["delta_quality_c"] / 100.0
+                          * ledger["shares"])
+    grp = ledger.groupby("tte_bucket").agg(
+        pnl_proxy=("pnl_proxy_usd", "sum"), n_fills=("shares", "size"))
+    grp = grp.sort_index(ascending=False)
+
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    axes[0].bar(grp.index, grp["pnl_proxy"], width=bucket_s * 0.9,
+               color="tab:blue")
+    axes[0].axhline(0.0, color="0.5", lw=0.8)
+    axes[0].set_ylabel("markout PnL proxy, USD")
+    axes[0].set_title("Markout-based PnL proxy and fills, by time-to-expiry "
+                      f"bucket ({bucket_s:.0f}s)")
+
+    axes[1].bar(grp.index, grp["n_fills"], width=bucket_s * 0.9,
+               color="tab:gray")
+    axes[1].set_ylabel("fill count")
+    axes[1].set_xlabel("time to expiry at fill, s (bucket start)")
+    axes[1].invert_xaxis()
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+# -- 5. calibration -----------------------------------------------------------
+
+def plot_calibration(ledger, winner_up_by_market, path, n_buckets=10):
+    l = ledger.copy()
+    l["outcome"] = l["market_id"].map(winner_up_by_market).astype("float64")
+    l = l.dropna(subset=["z", "outcome"])
+    if not len(l):
+        return
+
+    resolved = resolve_slots(HERE)
+    link_mod = load_slot(resolved["link"], "link")
+    l["fair_p"] = l["z"].apply(link_mod.link)
+
+    l["decile"] = pd.qcut(l["fair_p"], n_buckets, duplicates="drop")
+    grp = l.groupby("decile", observed=True).agg(
+        predicted=("fair_p", "mean"), realised=("outcome", "mean"),
+        n=("outcome", "size"))
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot([0, 1], [0, 1], color="0.5", lw=1.0, ls="--", label="perfect")
+    ax.scatter(grp["predicted"], grp["realised"], s=grp["n"] / grp["n"].max()
+              * 200 + 20, color="tab:blue", zorder=5)
+    for _, row in grp.iterrows():
+        ax.annotate(f"n={int(row['n'])}", (row["predicted"], row["realised"]),
+                   fontsize=6, xytext=(3, 3), textcoords="offset points")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("predicted fair_p at fill time (decile mean)")
+    ax.set_ylabel("realised settlement frequency")
+    ax.set_title("Calibration: fills, maker+taker pooled")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def main():
+    with open(os.path.join(HERE, "last_run_manifest.json")) as fh:
+        manifest = json.load(fh)
+
+    maker = _load_run(manifest["run_dirs"]["maker"])
+    taker = _load_run(manifest["run_dirs"]["taker"])
+    detail = _load_run(manifest["run_dirs"]["detail"])
+
+    out_dir = maker["run_dir"]
+    print("plots ->", out_dir)
+
+    plot_cumulative_pnl(maker["markets"], os.path.join(out_dir, "cum_pnl_days.png"),
+                        "Cumulative net PnL, maker mode")
+    plot_cumulative_pnl(taker["markets"],
+                        os.path.join(out_dir, "cum_pnl_days_taker.png"),
+                        "Cumulative net PnL, taker mode")
+
+    chosen = manifest["chosen_detail_markets"]
+    for i, mkt in enumerate(chosen):
+        ok = plot_market_detail(detail["ticks"], detail["ledger"], mkt,
+                                os.path.join(out_dir, f"market_detail_{i}_{mkt}.png"))
+        if not ok:
+            print(f"WARNING: no ticks for chosen market {mkt}")
+
+    plot_markout(maker["ledger"], taker["ledger"],
+                os.path.join(out_dir, "markout_distribution.png"))
+
+    combined_ledger = pd.concat([maker["ledger"], taker["ledger"]],
+                                ignore_index=True)
+    plot_by_tte_bucket(combined_ledger, os.path.join(out_dir, "pnl_fills_by_tte.png"))
+
+    # winner_up per market, from the same 6-day spot sample used for the runs
+    episodes = load_episodes(spot_path=paths.SPOT, days=manifest["spot_days"])
+    winner_up_by_market = {ep.market_id: (1.0 if ep.winner_up else 0.0)
+                           for ep in episodes if ep.winner_up is not None}
+    plot_calibration(combined_ledger, winner_up_by_market,
+                    os.path.join(out_dir, "calibration.png"))
+
+    print("done")
+
+
+if __name__ == "__main__":
+    main()
