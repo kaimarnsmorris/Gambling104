@@ -195,6 +195,31 @@ class Cell:
         return len(next(iter(self.rows.values()))) if self.rows else 0
 
 
+#: every column `evaluate` emits, with the dtype it emits it as. Kept beside `Cell`
+#: because `_empty_cell` must offer the SAME keys the populated path does - a caller
+#: that indexes `rows["T"]` has to work on a zero-row answer too.
+_ROW_INT = ("T", "t", "it", "it_q")
+_ROW_BOOL = ("up", "ok")
+_ROW_FLOAT = ("p_up", "p_model", "p_quoted", "var_y", "y_star", "resid", "z", "nu",
+              "mu", "sigma_t", "omega", "n_known", "n_transit", "m_Y", "eps_bar",
+              "var_eps", "var_basis", "carry", "act", "settle", "strike", "p_ref")
+
+
+def _empty_cell(kind: str, L: int, n: int) -> Cell:
+    """`evaluate`'s zero-row answer.
+
+    The `keep` mask can eliminate every expiry it was handed - a caller passing its
+    own `expiries` (as `export.build_export` does at every `t_s`) has no reason to
+    know where the window's edges are. That is an empty result, not an error, and
+    the populated path cannot express it: it reads `T[0]` and `stamps[0]` to build
+    the residual's component ages and raises `IndexError` on a zero-row array.
+    """
+    rows = {k: np.zeros(0, dtype=np.int64) for k in _ROW_INT}
+    rows.update({k: np.zeros(0, dtype=bool) for k in _ROW_BOOL})
+    rows.update({k: np.zeros(0, dtype=np.float64) for k in _ROW_FLOAT})
+    return Cell(kind, L, n, rows)
+
+
 def market_grid(win: Window, L: int, step: int = 300,
                 burn_days: int = 14) -> np.ndarray:
     """Expiries on a `step`-second grid, far enough inside the window to be scorable.
@@ -226,6 +251,8 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
     iO = iT - L                                             # the market's open
     keep = (it > 0) & (iT < win.n) & (iO >= 0)
     T, iT, it, iO = T[keep], iT[keep], it[keep], iO[keep]
+    if T.size == 0:
+        return _empty_cell(kind, L, n)
     Lw = int(twap_len)
 
     # The market-observable baseline is the same model on a counterparty's information
@@ -302,9 +329,16 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
                                           cap_c=model.xi_cap_c,
                                           cap_i=model.xi_cap_i)
     if xi.size:
-        u_blk = np.arange(n_q - xi.shape[1] + 1, n_q + 1, dtype=np.int64)
-        dT_blk = win.clock.dT_at(it_q, u_blk) * 86400.0
-        xi_bar = (unconditional_xi(win.bv, dT_blk / 86400.0)
+        # as in `fairvalue.fair_value`: `u_ext` reaches back to offset H so the shrink
+        # target's first increment is g(H+1) - g(H), aligned with xi[:, 0], rather than
+        # the whole head integral (curve.unconditional_xi, ALIGNMENT)
+        H_blk = n_q - xi.shape[1]
+        u_ext = np.arange(max(H_blk, 1), n_q + 1, dtype=np.int64)
+        dT_ext = win.clock.dT_at(it_q, u_ext)                     # business days
+        dT_prev = dT_ext[:, 0] if H_blk > 0 else None
+        dT_days = dT_ext[:, -xi.shape[1]:]
+        dT_blk = dT_days * 86400.0
+        xi_bar = (unconditional_xi(win.bv, dT_days, dT_prev)
                   if ov.shrink_w != 0.0 else None)
         xi = xi_adjust(ov, xi, dT_blk, xi_bar)
         if ov.kappa_vol != 0.0:
@@ -327,27 +361,32 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
     eps_bar = np.zeros(it.size)
     var_eps = np.zeros(it.size)
     var_basis = 0.0
-    if kind == "chainlink_twap60" and model.eps.sigma_bp != 0.0:
+    if kind == "chainlink_twap60":
+        # the same split of the two residual channels `fair_value` makes: the fast
+        # eps residual is gated by the sigma (so by `eps_scale`, R1), the
+        # basis-drift variance by `basis_tracker` alone. They are different
+        # processes and `eps_scale = 0` must not silently switch off the basis one.
         stamps = T[:, None] - np.arange(n_comp - n_recv)[None, :]
         ages = (stamps[0] - (T[0] - n - LAG_S)).astype(np.float64)
         w = np.full(ages.size, 1.0 / max(ages.size, 1))
-        mode = ("none" if model.eps.sigma_bp == 0.0
-                else ("full" if (ov.eps_condition and ov.information_set == "full")
-                      else "unconditional"))
-        c, q_unit = eps_conditional(model.eps, ages, w, 1.0, mode)
-        # the same local-volatility definition `fair_value` uses: the business time of
-        # the next second, including the activity kick decayed forward
-        v_loc = np.sqrt(np.maximum(np.exp(logv[:, model.eps.reg_index]), 0.0)
-                        * np.maximum(win.clock.dT_at(it, np.array([1]))[:, 0], 1e-30))
-        sig = model.eps.sigma_at(v_loc)
-        var_eps = q_unit * sig ** 2
-        # d_lvl = b + eps by construction, so selecting b's tracker must select the
-        # matching residual - mixing b_alt's level with the main tracker's residual
-        # would double-count the gap between the two trackers (spec ruling 13)
-        eps_series = {"main": win.eps_step, "alt": win.eps_alt_step,
-                     "off": win.eps_step}.get(ov.basis_tracker, win.eps_step)
-        eps_last = eps_series[it - LAG_S]
-        eps_bar = c * np.where(np.isfinite(eps_last), eps_last, 0.0)
+        if model.eps.sigma_bp != 0.0:
+            mode = "full" if (ov.eps_condition
+                              and ov.information_set == "full") else "unconditional"
+            c, q_unit = eps_conditional(model.eps, ages, w, 1.0, mode)
+            # the same local-volatility definition `fair_value` uses: the business
+            # time of the next second, including the activity kick decayed forward
+            v_loc = np.sqrt(
+                np.maximum(np.exp(logv[:, model.eps.reg_index]), 0.0)
+                * np.maximum(win.clock.dT_at(it, np.array([1]))[:, 0], 1e-30))
+            sig = model.eps.sigma_at(v_loc)
+            var_eps = q_unit * sig ** 2
+            # d_lvl = b + eps by construction, so selecting b's tracker must select
+            # the matching residual - mixing b_alt's level with the main tracker's
+            # residual would double-count the gap between them (spec ruling 13)
+            eps_series = {"main": win.eps_step, "alt": win.eps_alt_step,
+                          "off": win.eps_step}.get(ov.basis_tracker, win.eps_step)
+            eps_last = eps_series[it - LAG_S]
+            eps_bar = c * np.where(np.isfinite(eps_last), eps_last, 0.0)
         if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
             var_basis = basis_drift_window_var(model, ages, w)

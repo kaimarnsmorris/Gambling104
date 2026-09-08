@@ -204,9 +204,18 @@ def fair_value(state, market: Market, model: FairValueModel,
     iv_head, xi = forward_block(model.v2, v_state, t, n, m_blk,
                                 cap_c=model.xi_cap_c, cap_i=model.xi_cap_i)
     if xi.size:
-        u_blk = np.arange(n - xi.size + 1, n + 1, dtype=np.int64)
-        dT_blk = dT_at(model.v2, v_state, t, u_blk) * 86400.0     # business seconds
-        xi_bar = (unconditional_xi(model.v2, dT_blk / 86400.0)
+        # the block covers offsets H+1 .. n. `u_ext` reaches one second FURTHER BACK,
+        # to H, because the shrink target's first increment is g(H+1) - g(H) and not
+        # g(H+1) - 0 (curve.unconditional_xi, ALIGNMENT). At H = 0 there is no earlier
+        # second and the first increment is the whole integral, which is what
+        # `dT_prev=None` asks for.
+        H_blk = n - xi.size
+        u_ext = np.arange(max(H_blk, 1), n + 1, dtype=np.int64)
+        dT_ext = dT_at(model.v2, v_state, t, u_ext)               # business days
+        dT_prev = float(dT_ext[0]) if H_blk > 0 else None
+        dT_days = dT_ext[-xi.size:]
+        dT_blk = dT_days * 86400.0                                # business seconds
+        xi_bar = (unconditional_xi(model.v2, dT_days, dT_prev)
                   if ov.shrink_w != 0.0 else None)
         xi = xi_adjust(ov, xi, dT_blk, xi_bar)
         # the head integral carries the same uniform scaling; the short-end and
@@ -220,23 +229,31 @@ def fair_value(state, market: Market, model: FairValueModel,
 
     # ---- the residual --------------------------------------------------------
     eps_bar, var_eps, var_basis = 0.0, 0.0, 0.0
-    if kind == "chainlink_twap60" and model.eps.sigma_bp != 0.0 and unknown_ages:
-        v_loc = float(np.sqrt(max(state.v2.v[model.eps.reg_index], 0.0)
-                              * max(dT_at(model.v2, v_state, t, np.array([1]))[0], 1e-12)))
-        sig = float(model.eps.sigma_at(v_loc))
+    if kind == "chainlink_twap60" and unknown_ages:
+        # The component ages and their settlement weights are shared by the two
+        # residual channels, but the CHANNELS are gated separately. The fast eps
+        # residual answers to `eps_scale` (through model.eps.sigma_bp, R1); the
+        # basis-drift variance is a different process with its own selector and
+        # answers to `basis_tracker`. Gating both on the sigma gate made
+        # `eps_scale = 0` silently switch the basis channel off too - about 12% of
+        # that variant's var_y reduction at n = 60 was the basis term, not eps.
         ref_ts = state.filt.eps_last_ts if state.filt.eps_last_ts is not None else t
         ages = np.array([a - ref_ts for a in unknown_ages], dtype=np.float64)
         w = np.full(ages.size, 1.0 / max(n_unknown, 1))
-        mode = ("none" if model.eps.sigma_bp == 0.0
-                else ("full" if (ov.eps_condition and ov.information_set == "full")
-                      else "unconditional"))
-        c, var_eps = eps_conditional(model.eps, ages, w, sig, mode)
-        # d_lvl = b + eps by construction, so the residual has to come from whichever
-        # tracker supplied the level - mixing b_alt with the main eps would
-        # double-count the gap between the two trackers (spec ruling 13)
-        eps_last = (state.filt.eps_last_alt if ov.basis_tracker == "alt"
-                   else state.filt.eps_last)
-        eps_bar = c * eps_last
+        if model.eps.sigma_bp != 0.0:
+            v_loc = float(np.sqrt(
+                max(state.v2.v[model.eps.reg_index], 0.0)
+                * max(dT_at(model.v2, v_state, t, np.array([1]))[0], 1e-12)))
+            sig = float(model.eps.sigma_at(v_loc))
+            mode = "full" if (ov.eps_condition
+                              and ov.information_set == "full") else "unconditional"
+            c, var_eps = eps_conditional(model.eps, ages, w, sig, mode)
+            # d_lvl = b + eps by construction, so the residual has to come from
+            # whichever tracker supplied the level - mixing b_alt with the main eps
+            # would double-count the gap between the two trackers (spec ruling 13)
+            eps_last = (state.filt.eps_last_alt if ov.basis_tracker == "alt"
+                        else state.filt.eps_last)
+            eps_bar = c * eps_last
         if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
             var_basis = basis_drift_window_var(model, ages, w)

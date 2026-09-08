@@ -223,21 +223,40 @@ class BatchClock:
         return iv_head, xi
 
 
-def unconditional_xi(model, dT: np.ndarray) -> np.ndarray:
+def unconditional_xi(model, dT: np.ndarray, dT_prev=None) -> np.ndarray:
     """The forward curve the unconditional register bank would give, at ages `dT`.
 
     This is the shrink target (spec ruling R6): the seasonal level with no volatility
     news in it at all, which is what `registers.initial_value` encodes. `dT` is in
-    business days, matching `dT_at`, and the returned curve is per-second increments
-    aligned with `forward_block`'s block.
+    business days, matching `dT_at`.
+
+    ALIGNMENT. The returned curve is per-second *increments* over exactly the seconds
+    `dT` names, so `forward_block`'s block `xi[k]` and `xi_bar[k]` are the same second
+    and the shrink in `xi_adjust` mixes like with like. The block starts at offset
+    `H + 1 = n - m + 1`, not at the quote origin, so the first increment is
+    `g(dT[0]) - g(dT_prev)` where `dT_prev` is the business age of second `H` - the
+    second immediately BEFORE the block. `dT_prev=None` means the block really does
+    start at the origin (`H == 0`), and only then is the first increment the whole
+    integral to `dT[0]`. Differencing against a prepended zero when `H > 0` puts the
+    entire head integral into `xi_bar[0]`, which at n=300 is ~87x its neighbour.
+
+    The increments are clipped at zero for the same reason `forward_block` clips its
+    own: the bias-corrected integral is occasionally non-monotone at the very short end.
     """
-    v0 = np.asarray(model.params["registers"]["initial_value"], dtype=np.float64)
-    g = _iv_from_cum(model.forward, np.asarray(dT, dtype=np.float64),
-                     np.log(np.maximum(v0, 1e-300)))
-    g = np.atleast_2d(g)
-    inc = np.maximum(np.diff(np.concatenate(
-        [np.zeros((g.shape[0], 1)), g], axis=1), axis=1), 0.0)
-    return inc if np.ndim(dT) > 1 else inc[0]
+    v0 = np.log(np.maximum(np.asarray(model.params["registers"]["initial_value"],
+                                      dtype=np.float64), 1e-300))
+    dT = np.asarray(dT, dtype=np.float64)
+    g = np.atleast_2d(_iv_from_cum(model.forward, dT, v0))
+    if dT_prev is None:
+        g0 = np.zeros((g.shape[0], 1))
+    else:
+        # one extra evaluation of the SAME integral, at the second before the block;
+        # reshaped to a column so the 1-D and the (market, second) batch case share
+        # one code path
+        prev = np.reshape(np.asarray(dT_prev, dtype=np.float64), (-1, 1))
+        g0 = np.atleast_2d(_iv_from_cum(model.forward, prev, v0))
+    inc = np.maximum(np.diff(np.concatenate([g0, g], axis=1), axis=1), 0.0)
+    return inc if dT.ndim > 1 else inc[0]
 
 
 # ======================================================================== the harness

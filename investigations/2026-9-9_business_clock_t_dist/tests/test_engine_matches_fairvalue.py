@@ -96,8 +96,11 @@ def test_batch_equals_single_quote(win_base, ovkw, kind, L, n):
         st = state_at(win, it, model)
         mk = market_at(win, kind, Tk, n, L, 60)
         one = fair_value(st, mk, model, t_now=int(win.ts[it]))
+        # var_basis is in this list because it has its OWN gate (`basis_tracker`),
+        # separate from the eps sigma gate, and the two paths apply it separately
         for field, tol in (("var_y", 1e-8), ("y_star", 1e-7), ("omega", 0),
                            ("carry", 1e-7), ("eps_bar", 1e-8), ("var_eps", 1e-8),
+                           ("var_basis", 1e-8),
                            ("p_model", 1e-8), ("p_quoted", 1e-8)):
             a = getattr(one, field)
             b = float(cell.rows[field][k])
@@ -229,3 +232,31 @@ def test_no_lookahead(win_base):
     for field in ("var_y", "carry", "eps_bar", "var_eps", "omega"):
         assert getattr(ref, field) == pytest.approx(getattr(got, field), abs=1e-15), (
             "%s moved when data after the quote time changed" % field)
+
+
+def test_evaluate_returns_an_empty_cell_when_keep_drops_every_expiry(win_base):
+    """`keep` can eliminate every market it was handed, and that is not an error.
+
+    `export.build_export` passes its own expiry list at every one of 301 `t_s`
+    values and has no reason to know where the window's edges are, so `keep`
+    (`it > 0`, `iT < win.n`, `iO >= 0`) emptying `T` is a normal outcome. The
+    populated path cannot express it - it reads `T[0]` and `stamps[0]` to build
+    the residual's component ages and raised `IndexError` on a zero-row array.
+    """
+    from fvmodel.engine import evaluate, market_grid
+
+    win, base = win_base
+    beyond = np.array([int(win.ts[-1]) + 10_000, int(win.ts[-1]) + 20_000],
+                      dtype=np.int64)
+    empty = evaluate(win, base, "chainlink_twap60", 300, 60, expiries=beyond)
+    assert len(empty) == 0
+    assert all(np.size(v) == 0 for v in empty.rows.values())
+
+    populated = evaluate(win, base, "chainlink_twap60", 300, 60,
+                         expiries=market_grid(win, 300, burn_days=2)[:5])
+    assert len(populated) > 0
+    assert set(empty.rows) == set(populated.rows), (
+        "the empty answer must offer the same columns as a populated one, or a "
+        "caller that indexes rows[...] breaks on it")
+    assert empty.rows["ok"].dtype == populated.rows["ok"].dtype
+    assert empty.rows["T"].dtype == populated.rows["T"].dtype
