@@ -31,5 +31,12 @@ def register_bank(win, idx: np.ndarray, params_sha: str) -> np.ndarray:
             win._cache_logv = z["logv"].astype(np.float64)
             return win._cache_logv
     win.prepare(idx)
-    np.savez_compressed(path, idx=idx, logv=win._cache_logv.astype(np.float32))
+    # The warm path above reads float32 back and widens it to float64, so the cold
+    # path has to go through the same narrowing or the first build of a window and
+    # every rebuild of it disagree - measured, var_y differs by up to 3.9e-7
+    # relative. The export is meant to be reproducible from its provenance footer,
+    # which it is not if the answer depends on whether the cache happened to be warm.
+    small = win._cache_logv.astype(np.float32)
+    win._cache_logv = small.astype(np.float64)
+    np.savez_compressed(path, idx=idx, logv=small)
     return win._cache_logv

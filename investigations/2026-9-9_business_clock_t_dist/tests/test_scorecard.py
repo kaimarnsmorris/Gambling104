@@ -147,3 +147,50 @@ def test_score_variant_returns_every_headline():
     # write-up. Do not raise this back to 0.5 without re-measuring.
     assert 0.49 < r["near30_log_loss"] < np.log(2.0) * 1.1
     assert set(r["pnl"]) == {"edge_0.02", "edge_0.05", "edge_0.10"}
+
+
+@pytest.mark.slow
+def test_temperature_moves_the_pnl_and_leaves_calibration_bit_identical(tmp_path):
+    """The quoting knob must reach the trading proxy and nothing else.
+
+    `variants/README.md`: "If a temperature sweep ever shows identical PnL at every
+    temperature, that is the bug signature - the knob is not reaching the quote."
+    Nothing under `score/` read the export's `p_quoted` column before this test
+    existed, so that was exactly what a sweep would have shown.
+
+    The two exports here are the SAME build with only `p_quoted` re-derived, so
+    every calibration number - which runs on `p_model`, recomputed from
+    `(s, sigma, nu, mu, sigma_t)` - must come back bit-identical, while the proxy
+    must move.
+    """
+    import polars as pl
+
+    from export.build_export import build
+    from fvmodel.overrides import Overrides, quoted_prob
+    from score.scorecard import score_variant
+
+    t0 = 1786665600
+    cold = build("baseline", t0, t0 + 3 * 3600, out_path=tmp_path / "cold.parquet")
+    df = pl.read_parquet(cold)
+    hot = tmp_path / "hot.parquet"
+    df.with_columns(pl.Series("p_quoted", quoted_prob(
+        Overrides(temperature=1.5), df["p_model"].to_numpy()))).write_parquet(hot)
+    hot.with_suffix(".json").write_text(
+        cold.with_suffix(".json").read_text(encoding="utf-8"), encoding="utf-8")
+
+    a = score_variant("T=1.0", cold)
+    b = score_variant("T=1.5", hot)
+
+    for k in ("log_loss", "brier", "log_loss_grid", "brier_grid", "near30_brier"):
+        assert a[k] == b[k] or (np.isnan(a[k]) and np.isnan(b[k])), (
+            "temperature must not touch %s: %r vs %r" % (k, a[k], b[k]))
+    assert a["level_by_tte"] == b["level_by_tte"]
+    assert a["qlike_excess_by_tte"] == b["qlike_excess_by_tte"]
+    assert a["reliability"] == b["reliability"]
+
+    traded = [e for e in a["pnl"] if a["pnl"][e]["n_trades"] > 0]
+    assert traded, "the proxy took no trades at all; this window proves nothing"
+    moved = [e for e in traded if a["pnl"][e]["total"] != b["pnl"][e]["total"]]
+    assert moved, (
+        "temperature 1.5 left every PnL number identical - the knob is not "
+        "reaching the quote: %r" % ({e: a["pnl"][e]["total"] for e in traded},))

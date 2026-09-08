@@ -104,15 +104,20 @@ def _read_tail_family(export_path) -> str:
               .get("tail_family", "t"))
 
 
-def proxy_pnl(p_model, p_market, up, edge: float, fee_rate: float = BASE_FEE_RATE,
+def proxy_pnl(p_quote, p_market, up, edge: float, fee_rate: float = BASE_FEE_RATE,
               taker_rebate: float = 0.0833) -> dict:
-    """Buy the side the model likes when the gap clears `edge`, sized by the gap.
+    """Buy the side our QUOTE likes when the gap clears `edge`, sized by the gap.
+
+    `p_quote` is `p_quoted`, not `p_model`: this is the one thing in this branch
+    that models a quote, so it is the one place `overrides.temperature` is allowed
+    to reach. Calibration statistics stay on `p_model` (see `score_variant`) - a
+    quoting-layer knob must not be able to move a calibration number.
 
     Every trade is a taker at the market price. This is a proxy, not the harness:
     no queue, no latency, no inventory. It exists so a variant can be sanity-checked
     against a real price series before the execution harness lands.
     """
-    gap = np.asarray(p_model, dtype=np.float64) - np.asarray(p_market, dtype=np.float64)
+    gap = np.asarray(p_quote, dtype=np.float64) - np.asarray(p_market, dtype=np.float64)
     take = np.abs(gap) > edge
     if not take.any():
         return {"n_trades": 0, "total": 0.0, "mean": 0.0, "sd": 0.0, "sharpe": 0.0}
@@ -157,6 +162,16 @@ def score_variant(name: str, export_path: Path, ref_path: Path = None) -> dict:
     tte = MARKET_LEN - d["t_s"].to_numpy()
     z = (s - K) / np.maximum(sg, 1e-300)
     p = _p_at(z, nu, mu, sgt, family)
+    # THE QUOTE, as distinct from the belief. Every calibration metric below runs on
+    # `p` (= p_model, recomputed here at the venue's own strike) and must, or the
+    # quoting-layer `temperature` would pollute log-loss, Brier, reliability, QLIKE
+    # and the level ratios. The trading proxy is the exception and reads the
+    # export's own `p_quoted` column, which is where `overrides.temperature` lands
+    # (`export/build_export.py` applies `overrides.quoted_prob`). Nothing under
+    # `score/` read that column before, which made `temperature` invisible to every
+    # number the scorecard produces - a temperature sweep would have shown identical
+    # PnL at every temperature, the exact bug signature `variants/README.md` names.
+    p_quote = d["p_quoted"].to_numpy()
 
     out = {"variant": name, "n_rows": len(d),
            "n_markets": int(d["market_id"].n_unique()),
@@ -212,12 +227,12 @@ def score_variant(name: str, export_path: Path, ref_path: Path = None) -> dict:
                         "freq_up": float(up[m].mean())})
     out["reliability"] = rel
 
-    # the trading proxy, against the panel's real book mid
+    # the trading proxy, against the panel's real book mid - on `p_quote`, not `p`
     mid = book_mid(d)
     have = np.isfinite(mid)
     out["pnl"] = {}
     for e in EDGES:
-        r = proxy_pnl(p[have], mid[have], up[have], edge=e)
+        r = proxy_pnl(p_quote[have], mid[have], up[have], edge=e)
         frac = 0.0
         if r["n_trades"] and r["total"]:
             frac = float(r["pnl"][tte[have][r["take"]] <= 30].sum() / r["total"])
