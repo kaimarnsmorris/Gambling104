@@ -42,7 +42,17 @@ deliberate rather than an oversight:
     sell when  book_bid >= eff_ask + taker_fee(book_bid)
 
 The price we would pay is the price already on the screen, so the fee is known
-exactly -- evaluate it AT the book and there is nothing to solve.
+exactly -- evaluate it AT the book and there is nothing to solve. Note that
+neither threshold is snapped: `book_bid`/`book_ask` come off the venue and are
+therefore already on the cent grid, and `eff_bid`/`eff_ask` are compared to
+them as valuations, not sent as prices. Rounding a valuation before comparing
+it would only discard the sub-tick part of our own edge.
+
+Snapping happens ONCE, here, and only on prices we actually send. `quote.py`
+deliberately returns theoretical prices off the grid: the maker rebate is
+sub-tick, so snapping there and again here would round an on-grid number twice
+in the same direction and the fee adjustment could never move an order price.
+Adjust first, snap last -- the conservative direction is unchanged.
 
 Gates, all of which bind:
   * a book older than max_book_age_ms is not a quote, so we neither post
@@ -75,12 +85,20 @@ from harness.core.types import OrderRequest, Side
 _FIXED_POINT_PASSES = 2
 
 
-def _snap_down(p, tick):
-    return round(math.floor(p / tick + 1e-9) * tick, 10)
+def snap(p, side, tick):
+    """A price onto the venue's cent grid, conservatively: bids DOWN, asks UP.
 
-
-def _snap_up(p, tick):
-    return round(math.ceil(p / tick - 1e-9) * tick, 10)
+    The ONLY snap in the harness. `quote.py` hands us theoretical prices off
+    the grid on purpose: snapping there and again here would round an on-grid
+    number in the same direction twice, which is a no-op, and the whole maker
+    rebate is sub-tick -- so the adjustment could never survive it. Snap once,
+    on the number actually sent to the venue, and it does.
+    """
+    if side == Side.BUY:
+        p = round(math.floor(p / tick + 1e-9) * tick, 10)
+    else:
+        p = round(math.ceil(p / tick - 1e-9) * tick, 10)
+    return min(1.0, max(0.0, p))
 
 
 def maker_fee(fees, p):
@@ -108,18 +126,16 @@ def resting_price(fees, target, side):
 
 
 def resting_quote(fees, target, side, tick):
-    """`resting_price` snapped conservatively to the grid: bids DOWN, asks UP.
+    """The order price: `resting_price`, then ONE conservative snap.
 
-    The snap comes AFTER the fee adjustment, so a rounded price is never
-    better than the fee-adjusted valuation justifies. Note what that costs on
-    THIS venue: the whole rebate is sub-tick (0.35 c/share at its widest
-    against a 1 c grid), so a `target` already on the grid -- which is what
-    `quote.py` produces -- snaps straight back onto itself. The adjustment is
-    real and the sign is right; the grid is simply too coarse to express it.
+    `target` is the unsnapped theoretical quote, so the sub-tick rebate can
+    carry the price across a tick boundary before the snap sees it, and a bid
+    within the rebate of the next cent posts a full tick higher than the raw
+    quote would. Where it cannot reach the boundary the snap takes it back and
+    nothing changes -- which is the correct, conservative outcome, not the
+    universal one it used to be.
     """
-    p = resting_price(fees, target, side)
-    p = _snap_down(p, tick) if side == Side.BUY else _snap_up(p, tick)
-    return min(1.0, max(0.0, p))
+    return snap(resting_price(fees, target, side), side, tick)
 
 
 def decide(i, eff_bid, eff_ask, q, ep, live_orders, execn, params):
@@ -206,16 +222,25 @@ def _crosses(fees, eff_bid, eff_ask, book_bid, book_ask, live_orders, params,
     because the book price is exactly what we would pay. Compare the maker
     side, where the price is the unknown and so the fee is too; the asymmetry
     is the point, not an omission.
+
+    The THRESHOLD is unsnapped on both sides of the comparison: the book is
+    already on the grid because the venue put it there, and eff_bid/eff_ask
+    enter as valuations rather than as prices. Only the protective limit we
+    send is snapped, and snapping it conservatively cannot cost the fill: the
+    book price is on the grid and no worse than the valuation, so the nearest
+    grid point on the conservative side of the valuation is still at or
+    through the book.
     """
     out = []
     live_sides = {o.side for o in live_orders}
 
     if (room_buy and Side.BUY not in live_sides and math.isfinite(book_ask)
             and book_ask <= eff_bid - taker_fee(fees, book_ask)):
-        out.append(OrderRequest(Side.BUY, eff_bid, params.shares,
-                                Liquidity.TAKER, "cross_bid"))
+        out.append(OrderRequest(Side.BUY, snap(eff_bid, Side.BUY, params.tick),
+                                params.shares, Liquidity.TAKER, "cross_bid"))
     if (room_sell and Side.SELL not in live_sides and math.isfinite(book_bid)
             and book_bid >= eff_ask + taker_fee(fees, book_bid)):
-        out.append(OrderRequest(Side.SELL, eff_ask, params.shares,
-                                Liquidity.TAKER, "cross_ask"))
+        out.append(OrderRequest(Side.SELL, snap(eff_ask, Side.SELL,
+                                                params.tick),
+                                params.shares, Liquidity.TAKER, "cross_ask"))
     return out

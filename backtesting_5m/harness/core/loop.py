@@ -42,6 +42,8 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
         sigma_i = float(sigma_arr[i])
 
         if math.isfinite(s_i) and math.isfinite(sigma_i):
+            # Theoretical, off the cent grid. Policy adjusts for the maker fee
+            # and snaps once, so the price sent to the venue is not this one.
             eff_bid, eff_ask = quotes(s_i, q, ep.strike, sigma_i, params,
                                       standardise, link)
             z_i = standardise(s_i, ep.strike, sigma_i)

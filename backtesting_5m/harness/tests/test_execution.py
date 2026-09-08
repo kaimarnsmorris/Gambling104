@@ -75,30 +75,111 @@ def test_the_resting_price_is_a_self_consistent_fixed_point():
     """P + maker_fee(P) is the all-in cost, and it must land back on eff_bid.
 
     Two passes of the iteration, because the map contracts by 0.014 a pass:
-    the residual here is ~1e-7 against a 0.01 tick.
+    the residual here is ~1e-7 against a 0.01 tick. Stated on the UNSNAPPED
+    price, which is now what the fixed point actually solves for -- the snap
+    happens after it, on the way out to the venue.
     """
-    for eff_bid in (0.05, 0.2, 0.48, 0.5, 0.9):
+    for eff_bid in (0.05, 0.2, 0.48, 0.4880, 0.5, 0.9):
         bid = resting_price(FEES, eff_bid, Side.BUY)
         assert bid + maker_fee(FEES, bid) == pytest.approx(eff_bid, abs=TICK)
         assert bid + maker_fee(FEES, bid) == pytest.approx(eff_bid, abs=1e-6)
 
-    for eff_ask in (0.05, 0.2, 0.52, 0.5, 0.9):
+    for eff_ask in (0.05, 0.2, 0.52, 0.5120, 0.5, 0.9):
         ask = resting_price(FEES, eff_ask, Side.SELL)
         assert ask - maker_fee(FEES, ask) == pytest.approx(eff_ask, abs=TICK)
         assert ask - maker_fee(FEES, ask) == pytest.approx(eff_ask, abs=1e-6)
 
 
-def test_the_cent_grid_absorbs_the_whole_maker_rebate():
-    """0.35 c/share at its widest, snapped conservatively onto a 1 c grid.
+def test_the_all_in_cost_of_the_placed_price_never_sits_through_fair():
+    """The snap only ever rounds AWAY from us, so it cannot post through fair.
 
-    So an on-grid eff_bid -- which is all `quote.py` ever produces -- posts at
-    exactly eff_bid. The adjustment is real and correctly signed; this venue's
-    tick is simply too coarse to express it, which is why fee-awareness bites
-    on the taker threshold and not here.
+    This replaces the old pin that the cent grid absorbs the whole rebate. It
+    does not -- moving the snap after the fee adjustment lets a tick through --
+    but the guarantee that mattered survives: the all-in cost of the price we
+    place, P + maker_fee(P), is never better than eff_bid for a bid, nor worse
+    than eff_ask for an ask. Nobody may later start posting THROUGH fair.
     """
-    assert -maker_fee(FEES, 0.5) < TICK
-    assert resting_quote(FEES, 0.48, Side.BUY, TICK) == pytest.approx(0.48)
-    assert resting_quote(FEES, 0.52, Side.SELL, TICK) == pytest.approx(0.52)
+    grid = [round(0.02 + 0.0007 * k, 6) for k in range(1400)]
+
+    for eff_bid in grid:
+        p = resting_quote(FEES, eff_bid, Side.BUY, TICK)
+        assert p + maker_fee(FEES, p) <= eff_bid + 1e-12, "bid posts through fair"
+        # and no more conservative than the grid forces: one tick below the
+        # exact fee-adjusted price, never two.
+        assert resting_price(FEES, eff_bid, Side.BUY) - p < TICK
+
+    for eff_ask in grid:
+        p = resting_quote(FEES, eff_ask, Side.SELL, TICK)
+        assert p - maker_fee(FEES, p) >= eff_ask - 1e-12, "ask posts through fair"
+        assert p - resting_price(FEES, eff_ask, Side.SELL) < TICK
+
+
+# -- the rebate now reaches the order price ----------------------------------
+
+def test_the_rebate_lifts_the_placed_bid_a_full_tick(flat_episode):
+    """fair 0.4880 is within the 0.35 c rebate of 0.49, so we post 0.49.
+
+    Snapping the theoretical quote first would have floored it to 0.48 and the
+    sub-tick rebate could never have climbed back out. Adjust, THEN snap once.
+    """
+    place, _ = decide(100, 0.4880, 0.60, 0.0, flat_episode, [],
+                      ExecConfig(), PARAMS)
+    bids = [o for o in _makers(place) if o.side == Side.BUY]
+    assert [o.price for o in bids] == [pytest.approx(0.49)]
+
+
+def test_the_rebate_leaves_the_placed_bid_alone_when_it_cannot_reach(
+        flat_episode):
+    """fair 0.4850 is 1.5 c from 0.49 -- further than the rebate -- so 0.48."""
+    place, _ = decide(100, 0.4850, 0.60, 0.0, flat_episode, [],
+                      ExecConfig(), PARAMS)
+    bids = [o for o in _makers(place) if o.side == Side.BUY]
+    assert [o.price for o in bids] == [pytest.approx(0.48)]
+
+
+def test_the_rebate_drops_the_placed_ask_a_full_tick(flat_episode):
+    """The mirror image: fair 0.5120 posts at 0.51, not 0.52."""
+    place, _ = decide(100, 0.40, 0.5120, 0.0, flat_episode, [],
+                      ExecConfig(), PARAMS)
+    asks = [o for o in _makers(place) if o.side == Side.SELL]
+    assert [o.price for o in asks] == [pytest.approx(0.51)]
+
+
+def test_the_rebate_leaves_the_placed_ask_alone_when_it_cannot_reach(
+        flat_episode):
+    place, _ = decide(100, 0.40, 0.5150, 0.0, flat_episode, [],
+                      ExecConfig(), PARAMS)
+    asks = [o for o in _makers(place) if o.side == Side.SELL]
+    assert [o.price for o in asks] == [pytest.approx(0.52)]
+
+
+def test_every_placed_price_is_on_the_cent_grid(flat_episode):
+    """Maker and taker alike. The venue takes cents; theory does not leave it."""
+    ep = flat_episode
+    for k in range(120):
+        fair = 0.20 + 0.0047 * k
+        ep.bid[100], ep.ask[100] = 0.49, 0.51
+        place, _ = decide(100, fair, fair + 0.004, 0.0, ep, [],
+                          ExecConfig(), PARAMS)
+        for o in place:
+            assert o.price == pytest.approx(round(o.price, 2), abs=1e-9), fair
+
+
+def test_a_maker_order_still_never_crosses_the_book_after_the_adjustment(
+        flat_episode):
+    """The rebate lifts the bid, so the guard has to be tested on the SENT
+    price. A quote 0.35 c below the ask now snaps up onto it if we are sloppy.
+    """
+    ep = flat_episode
+    ep.bid[100], ep.ask[100] = 0.49, 0.50
+    for k in range(200):
+        fair = 0.40 + 0.0005 * k
+        place, _ = decide(100, fair, fair, 0.0, ep, [], ExecConfig(), PARAMS)
+        for o in _makers(place):
+            if o.side == Side.BUY:
+                assert o.price < ep.ask[100], fair
+            else:
+                assert o.price > ep.bid[100], fair
 
 
 # -- the taker threshold is fee-adjusted -------------------------------------

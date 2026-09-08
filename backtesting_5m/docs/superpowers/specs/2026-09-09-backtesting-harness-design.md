@@ -138,7 +138,7 @@ investigation folder *is* the override.
 | vol | `vol.py` | `precompute(ep) -> sigma[N]` |
 | f | `f.py` | `standardise(s, strike, sigma) -> z`; bound to `strike` and `sigma[i]` per tick, so the quote algebra calls it as `f(.)` on the level alone |
 | link | `link.py` | `link(z) -> p` in (0,1) |
-| quote | `quote.py` | `quotes(s_i, q, params) -> (eff_bid, eff_ask)` |
+| quote | `quote.py` | `quotes(s_i, q, params) -> (eff_bid, eff_ask)`, theoretical and *not* snapped to the cent grid — see §3.1 |
 | execution | `execution.py` | order policy — post / cross / cancel / gate |
 | fill | `fill.py` | whether a live order fills, and at what price |
 | fees | `fees.py` | `charge(...) -> usd`, negative for rebates |
@@ -223,10 +223,32 @@ the fee is evaluated at the book directly. That asymmetry is deliberate.
 
 The rebate justifies posting *inside* fair by up to 0.35 c/share (the all-in
 cost of a maker buy at `P` is `P + fee(P)`, and it is that which must clear
-`eff_bid`). On a 1 c grid the conservative snap — bids down, asks up, applied
-after the fee adjustment — absorbs all of it, so the sign is right but the
-grid cannot express it. The taker threshold is where fee-awareness actually
-bites: crossing on a 1 c edge against a ~1.6 c fee loses by construction.
+`eff_bid`).
+
+**Snapping to the 1 c grid happens exactly once, in `execution.py`, and only on
+prices actually sent to the venue.** `quote.py` returns the *theoretical*
+`eff_bid`/`eff_ask` off the grid, clipped to `[0, 1]` and nothing more. Order
+placement adjusts for the maker fee first and snaps afterwards — conservatively
+as before, bids down and asks up. Snapping in both places was a silent no-op by
+construction: the whole rebate is sub-tick, so adding it to an already-on-grid
+number and re-rounding in the same direction can never move the price. With one
+snap it does — a full tick whenever the theoretical quote sits within the rebate
+of the next tick, which is `rebate(p)/tick` of the time: **35 % at the money,
+33 % over 0.30–0.70, 24 % across the whole 0.01–0.99 range**. On a 1 c venue
+that is the difference between resting at the touch and resting behind it.
+
+The conservative guarantee is unchanged and is what the tests now pin: the
+all-in cost of the placed price never sits *through* fair. The taker thresholds
+are deliberately left unsnapped on both sides — `book_bid`/`book_ask` are
+already on the grid because the venue put them there, and `eff_bid`/`eff_ask`
+enter as valuations rather than prices; only the protective limit sent with a
+cross is snapped. The taker threshold is also where fee-awareness bites hardest:
+crossing on a 1 c edge against a ~1.6 c fee loses by construction.
+
+Because `eff_bid`/`eff_ask` are now theory rather than order prices, that is
+what `fills.parquet` and `ticks.parquet` record under those names; the order
+price is the fill `price` on a maker fill, and `price - eff_bid` is exactly the
+rebate the single snap let through.
 
 ### 3.2 Latency
 
@@ -310,6 +332,8 @@ q_before, q_after, latency_ms, order_age_ms, mid_t10, delta_quality_c,
 markout_settled, seed, order_id, reason`
 
 - `liquidity` — maker or taker, on every row.
+- `eff_bid` / `eff_ask` — the **theoretical** quote, off the cent grid. The
+  order price is `price` on a maker fill (a limit order trades at its limit).
 - `fee_usd` — **negative for maker** (rebate). Gross and net are always both
   recoverable; a harness that reports only one will eventually report the wrong
   one, and the taker case (gross +1.085 against the fee) is exactly that trap.

@@ -59,12 +59,27 @@ def test_edge_in_latent_space_moves_the_pair_apart():
     assert (wide[1] - wide[0]) > (narrow[1] - narrow[0])
 
 
-def test_quotes_snap_to_the_cent_grid_conservatively():
-    """Bids round DOWN and asks round UP -- never quote better than intended."""
+def test_quotes_are_theoretical_and_not_snapped_to_the_grid():
+    """The block returns the raw algebra, off the cent grid, on purpose.
+
+    Snapping moved to `execution.py`, which adjusts for the maker fee FIRST and
+    snaps once afterwards. Snapping here as well made that adjustment a no-op:
+    the whole rebate is sub-tick, so re-rounding an already-on-grid number in
+    the same direction could never move an order price.
+    """
     bid, ask = q_at(e_p=0.037)
-    assert bid == pytest.approx(round(bid, 2), abs=1e-9)
-    assert ask == pytest.approx(round(ask, 2), abs=1e-9)
-    assert bid <= 0.463 + 1e-9 and ask >= 0.537 - 1e-9
+    assert bid == pytest.approx(0.463, abs=1e-3)
+    assert ask == pytest.approx(0.537, abs=1e-3)
+    assert abs(bid - round(bid, 2)) > 1e-6, "the bid was rounded to the grid"
+    assert abs(ask - round(ask, 2)) > 1e-6, "the ask was rounded to the grid"
+
+
+def test_the_quote_block_exposes_no_snapping_helper():
+    """Rounding is an order-placement concern; there is one snap and it is
+    `execution.snap`. A second one here is how the rebate got destroyed."""
+    import harness.blocks.defaults.quote as quote_block
+
+    assert not [n for n in vars(quote_block) if "snap" in n]
 
 
 def test_quotes_stay_inside_the_bounds():

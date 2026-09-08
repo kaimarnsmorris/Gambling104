@@ -3,6 +3,15 @@
 Every fill carries its own fee (negative for makers) and its 10 s markout, so
 gross and net are always both recoverable and adverse selection is visible per
 fill rather than only in the aggregate.
+
+`eff_bid`/`eff_ask` in both frames are the THEORETICAL quote off the cent grid,
+not an order price. The order price is the fee-adjusted, snapped one that
+`execution.resting_quote` produces, and it is already recorded where it is
+meaningful: a maker fill trades at its own limit, so `price` on the fill IS the
+order price, and the gap `price - eff_bid` is exactly the rebate the snap let
+through. The tick frame carries no order price on purpose -- ticks are emitted
+every 100 ms and decisions only every `requote_every`, so a per-tick "price we
+would send" would be a number no order was ever placed at.
 """
 import numpy as np
 import pandas as pd
