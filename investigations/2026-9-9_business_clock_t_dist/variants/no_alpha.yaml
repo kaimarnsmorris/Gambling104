@@ -6,3 +6,9 @@ notes: >
   move pooled log-loss; if it moves it a lot, the alpha is doing more than the
   0.18 bp per unit of imbalance it was fitted at, which would be suspicious
   given the book captures do not overlap the Chainlink history.
+
+  CURRENTLY INERT on the real-panel export, for a reason stronger than the
+  paragraph above anticipated: export/build_export.py calls
+  evaluate(..., book=None), so m_Y is already zero in BASELINE on this panel,
+  not just after this override. m_Y going to "exactly zero" here confirms
+  nothing was on to begin with, not that alpha's effect is negligible.

@@ -57,6 +57,29 @@ def temperature(name: str | None = None) -> float:
     return float(meta["provenance"]["overrides_non_default"].get("temperature", 1.0))
 
 
+@functools.lru_cache(maxsize=4)
+def tail_family(name: str | None = None) -> str:
+    """The variant's settlement-tail family ("t" or "normal"), read from the export's
+    own sidecar - the same mechanism as `temperature` above, and for the same reason:
+    it is a per-variant constant (`Overrides.tail_family`), not a per-row quantity, so
+    it belongs in the sidecar JSON rather than a parquet column that would just repeat
+    the same string on every row.
+
+    This is load-bearing, not cosmetic: `fvmodel/overrides.py::_scaled_tail` leaves
+    `(nu, mu, sigma)` numerically UNTOUCHED when `tail_family == "normal"` - it only
+    flips an in-memory `.family` flag on the `SettlementTail` object, which the export
+    (a table of numbers) cannot carry. Without reading this flag back out of the
+    sidecar, `link._prob` would recompute the Student-t form on those unchanged
+    columns and silently price every `normal_tail`-style variant as baseline - which
+    is exactly the defect this function exists to close (see fix-round 1 in
+    .superpowers/sdd/2026-09-09-fv-consolidation/task-10-report.md).
+    """
+    name = name or variant()
+    p = Path(FAIR_DIR) / ("%s.json" % name)
+    meta = json.loads(p.read_text(encoding="utf-8"))
+    return str(meta["provenance"]["overrides_non_default"].get("tail_family", "t"))
+
+
 @functools.lru_cache(maxsize=4096)
 def _for_market(name: str, market_id: str) -> dict:
     d = _table(name).filter(pl.col("market_id") == market_id).sort("t_s")

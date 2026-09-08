@@ -4,3 +4,8 @@ overrides: {alpha_scale: 2.0}
 notes: >
   Double the location term. If the fitted alpha is right this must be worse
   than baseline; if it is better, the term is under-scaled on this settlement.
+
+  CURRENTLY INERT on the real-panel export: export/build_export.py calls
+  evaluate(..., book=None), so m_Y is zero on every row and there is nothing
+  for alpha_scale to scale. See variants/README.md's "book-size gap" note. A
+  null result here is not evidence about the fitted alpha term.

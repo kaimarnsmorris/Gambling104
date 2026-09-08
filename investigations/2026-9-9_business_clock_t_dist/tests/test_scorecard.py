@@ -18,6 +18,36 @@ def test_log_loss_clips_rather_than_returning_inf():
     assert np.isfinite(log_loss(np.array([0.0]), np.array([1.0])))
 
 
+def test_p_at_branches_on_family_fix_round_1():
+    """FIX-ROUND 1 regression: `_p_at` used to call `stats.t.cdf` unconditionally,
+    which silently scored `tail_family="normal"` variants (e.g. `normal_tail`) as
+    baseline, because `fvmodel/overrides.py::_scaled_tail` leaves `(nu, mu, sigma)`
+    numerically unchanged for that family. `link.py::_prob` had the identical bug
+    and is fixed the identical way (see tests/test_blocks.py::
+    test_blocks_reproduce_the_export_probability_for_a_normal_family_variant for the
+    full-pipeline regression check); this test pins the derivation at the unit
+    level: for the normal family, P(up) = norm.cdf(z), independent of (nu, mu, sg)."""
+    from scipy import stats
+
+    from score.scorecard import _p_at
+
+    z = np.array([-1.5, -0.25, 0.0, 0.7, 2.0])
+    nu = np.array([4.0, 5.0, 6.0, 7.0, 8.0])
+    mu = np.array([0.3, -0.2, 0.1, 0.0, -0.1])   # deliberately non-zero/non-trivial
+    sg = np.array([0.8, 1.2, 1.0, 1.5, 0.9])
+
+    p_t = _p_at(z, nu, mu, sg, family="t")
+    assert np.allclose(p_t, stats.t.cdf((z + mu) / sg, df=nu))
+
+    p_normal = _p_at(z, nu, mu, sg, family="normal")
+    assert np.allclose(p_normal, stats.norm.cdf(z))
+    # (nu, mu, sg) must have zero effect under the normal family
+    p_normal_other_params = _p_at(z, nu * 100, mu * 100, sg * 100, family="normal")
+    assert np.allclose(p_normal, p_normal_other_params)
+    assert not np.allclose(p_t, p_normal), (
+        "the two families must give different answers on non-trivial (mu, sg)")
+
+
 def test_pnl_only_trades_past_the_edge_and_sizes_by_the_gap():
     from score.scorecard import proxy_pnl
 

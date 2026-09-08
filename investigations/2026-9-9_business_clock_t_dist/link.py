@@ -26,31 +26,52 @@ callable; if the harness cannot bind it, `link(z, i)` takes the index directly.
 import numpy as np
 from scipy import stats
 
-from _fvexport import for_episode, temperature as _read_temperature
+from _fvexport import (for_episode, tail_family as _read_tail_family,
+                       temperature as _read_temperature)
 from fvmodel.overrides import Overrides, quoted_prob
 
 _BOUND = {}
 
 
-def _prob(z, nu, mu, sigma_t):
+def _prob(z, nu, mu, sigma_t, family: str = "t"):
+    """P(up) at the block's own `z`, in the family the variant actually fits.
+
+    Derivation of the `family == "normal"` branch, from `fvmodel/tails.py`'s
+    `SettlementTail.prob_up`: that method computes `q = y_star / sqrt(var_y)` and,
+    for the normal family, returns `1 - norm.cdf(q)`, ignoring `(mu, sigma)`
+    entirely (`SettlementTail.normal()` ships `mu=0, sigma=1` precisely so those
+    columns would be no-ops even if consulted). Relating `q` to this block's `z`:
+    the export sets `y_star = (K - s) / (p_ref * omega)` and `sigma = sqrt(var_y) *
+    p_ref * omega`, so `q = y_star / sqrt(var_y) = (K - s) / sigma = -z` (with
+    `z = (s - K) / sigma`, this block's convention). So:
+
+        P(up) = 1 - norm.cdf(-z) = norm.cdf(z)      (standard normal symmetry)
+
+    with no dependence on `(mu, sigma_t)` at all - matching `prob_up` exactly,
+    including its indifference to those two columns under this family. Do not
+    reach for a mu/sigma-shifted normal here; that would not match `tails.py`.
+    """
     z = np.asarray(z, dtype=np.float64)
+    if family == "normal":
+        return stats.norm.cdf(z)
     nu = np.asarray(nu, dtype=np.float64)
     sg = np.maximum(np.asarray(sigma_t, dtype=np.float64), 1e-12)
     return stats.t.cdf((z + np.asarray(mu, dtype=np.float64)) / sg, df=nu)
 
 
-def _quote(z, nu, mu, sigma_t, temp: float = 1.0):
+def _quote(z, nu, mu, sigma_t, temp: float = 1.0, family: str = "t"):
     """`_prob` then the quoting-layer temperature - never touches `p_model`."""
-    p = _prob(z, nu, mu, sigma_t)
+    p = _prob(z, nu, mu, sigma_t, family)
     return quoted_prob(Overrides(temperature=temp), p)
 
 
 def bind(ep):
     c = for_episode(ep)
     temp = _read_temperature()
+    family = _read_tail_family()
 
     def link(z, i):
-        return float(_quote(z, c["nu"][i], c["mu"][i], c["sigma_t"][i], temp))
+        return float(_quote(z, c["nu"][i], c["mu"][i], c["sigma_t"][i], temp, family))
 
     _BOUND[id(ep)] = link
     return link

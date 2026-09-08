@@ -27,19 +27,34 @@ OUT = INV / "report_variants.html"
 # Per task instructions, a disagreement is not smoothed over - it is written here.
 FINDINGS = {
     "alpha_half": (
-        "No detectable effect: p_model is bit-for-bit identical to baseline. The "
-        "order-book imbalance feeding alpha_scale is uniformly zero across this "
-        "panel's book capture, so there is nothing for alpha_scale to scale - "
-        "confirming variants/README.md's own caution that the book captures do not "
-        "overlap the Chainlink history used here."),
+        "CURRENTLY INERT ON THIS EXPORT, not a null result about the alpha term "
+        "itself: p_model is bit-for-bit identical to baseline because "
+        "export/build_export.py calls evaluate(..., book=None), so m_Y is zero on "
+        "every row and there is nothing for alpha_scale to scale. The precise "
+        "reason: top-of-book imbalance is I = ln(bid_size / ask_size), which needs "
+        "SIZES, and the Polymarket 5 m book panel this export reads "
+        "(backtesting_5m/data/book_5m_100ms.parquet) carries no size column at all "
+        "(backtesting_5m/data/README.md says so explicitly - L1 price only). The "
+        "venue L1 source the harness uses elsewhere (stream_venue_l1) DOES carry "
+        "sizes (bn_spot_bid_sz/ask_sz and friends), so this is unwired plumbing, "
+        "not a permanent limit - alpha_half/alpha_x2/no_alpha become meaningful "
+        "the moment a book feed with sizes is passed into build_export's "
+        "evaluate() call instead of book=None. Do not read this null delta as "
+        "evidence the fitted alpha term is worthless."),
     "alpha_x2": (
-        "Same as alpha_half: p_model is bit-for-bit identical to baseline because "
-        "the order-book imbalance input is uniformly zero over this panel."),
+        "CURRENTLY INERT ON THIS EXPORT, same cause as alpha_half: "
+        "export/build_export.py's evaluate(..., book=None) leaves m_Y at zero on "
+        "every row because the order-book imbalance term needs SIZES (I = "
+        "ln(bid_size/ask_size)) and this panel has none - see the alpha_half entry "
+        "above for the full derivation and what would make this variant live."),
     "no_alpha": (
-        "Confirmed, more strongly than the note anticipated: m_Y and p_model are "
-        "bit-for-bit identical to baseline and the pooled log-loss delta is exactly "
-        "0.0 - not because a nonzero alpha effect happened to cancel, but because "
-        "alpha_scale=1 already computes to zero imbalance on this panel."),
+        "Matches its note's letter (m_Y goes to exactly zero, pooled log-loss "
+        "moves not at all) for the WRONG reason to read anything into: baseline "
+        "already computes zero order-book imbalance on this panel (no size column "
+        "reaches build_export's evaluate() call - see the alpha_half entry above), "
+        "so turning alpha off changes nothing because there was nothing on. This "
+        "is CURRENTLY INERT ON THIS EXPORT, not confirmation that alpha_scale=1 "
+        "was already negligible in general."),
     "basis_alt": (
         "Partially contradicts its note. m_Y is bit-for-bit untouched and eps_bar "
         "does move, as predicted. But 'carry' is also bit-for-bit identical to "
@@ -73,17 +88,25 @@ FINDINGS = {
         "worsens slightly (+0.0037). The cell the note singles out as showing the "
         "lag edge 'most of all' is exactly the one where this variant does best."),
     "normal_tail": (
-        "THE HEADLINE FINDING, and it is a scorecard limitation, not a model one. "
-        "The note expects a clear near-expiry loss; every scorecard number here is "
-        "bit-for-bit identical to baseline. score_variant recomputes p via a "
-        "hardcoded stats.t.cdf(nu, mu, sigma_t) (score/scorecard.py::_p_at), and "
-        "tail_family='normal' only flips an internal .family flag in "
-        "fvmodel/overrides.py::_scaled_tail without touching (nu, mu, sigma_t) - so "
-        "this scorecard cannot see the override at all. The already-exported "
-        "p_model column, built by the real family-aware pipeline, DOES differ "
-        "meaningfully from baseline (mean |delta p_model| = 0.0251, max = 0.127); "
-        "the model is doing its job, this report just never reads the column that "
-        "would show it."),
+        "FIX-ROUND 1: this variant used to score bit-for-bit identical to baseline "
+        "on every scorecard number, which was reported here as a 'scorecard "
+        "limitation.' That framing understated it - the review found the same bug "
+        "in link.py::_prob, the harness's actual quoting path, which recomputed "
+        "stats.t.cdf(nu, mu, sigma_t) unconditionally; since tail_family='normal' "
+        "leaves those three columns numerically untouched (fvmodel/overrides.py::"
+        "_scaled_tail only flips an in-memory .family flag), the shipped "
+        "normal_tail variant would have been PRICED BY THE HARNESS as baseline - a "
+        "shipped variant that silently does nothing, the exact failure mode this "
+        "exercise exists to catch. Both call sites now branch on the family read "
+        "back from the export's sidecar JSON (norm.cdf(z), derived from "
+        "fvmodel/tails.py::SettlementTail.prob_up's normal-family branch; see "
+        "score/scorecard.py::_p_at and link.py::_prob for the derivation). "
+        "Rescored: near30 log-loss now +0.02015 against baseline (0.52608 vs "
+        "0.50593) and pooled +0.00308 (0.40907 vs 0.40599) - worse, as the note "
+        "expects, and no longer null. level_by_tte is unaffected (bit-for-bit "
+        "identical to baseline at every horizon), the same pattern as fat_tails/"
+        "thin_tails: a pure shape change moves log-loss, not the second-moment "
+        "metrics."),
     "rho_off": (
         "Direction confirmed, threshold not met: level_by_tte rises above baseline "
         "at all six tte buckets, but only the longest (121-300 s: 1.139) actually "

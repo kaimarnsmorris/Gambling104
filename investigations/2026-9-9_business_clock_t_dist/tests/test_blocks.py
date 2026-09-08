@@ -151,6 +151,60 @@ def test_blocks_reproduce_the_export_probability_at_the_venue_strike():
 
 
 @pytest.mark.slow
+def test_blocks_reproduce_the_export_probability_for_a_normal_family_variant(tmp_path):
+    """Fix-round 1 regression: `link._prob` used to call `stats.t.cdf` unconditionally
+    on the exported `(nu, mu, sigma_t)`, and `fvmodel/overrides.py::_scaled_tail`
+    leaves those three columns numerically UNCHANGED when `tail_family == "normal"`
+    (it only flips an in-memory `.family` flag the export can't carry). So the
+    harness's own quoting path (`link.py`) would have silently priced `normal_tail`
+    identically to baseline - a shipped variant that does nothing, which is exactly
+    the failure mode this scorecard exercise exists to catch. A test that only ever
+    exercises a Student-t export cannot see this class of bug, which is why this one
+    builds a `normal_tail` export directly rather than reusing `test_blocks_reproduce_
+    the_export_probability_at_the_venue_strike`'s baseline fixture.
+    """
+    import polars as pl
+
+    from export.build_export import build
+    from harness_paths import STRIKES
+
+    import json
+
+    import f
+    import link
+
+    t0 = 1786665600
+    p = build("normal_tail", t0, t0 + 3 * 3600, out_path=tmp_path / "normal_tail.parquet")
+    df = pl.read_parquet(p).filter(pl.col("ok"))
+    strikes = pl.read_parquet(STRIKES).select(["market_id", "strike"])
+    j = df.join(strikes, on="market_id")
+    assert len(j) > 100
+
+    # the sidecar must actually say "normal" - the mechanism this fix-round added.
+    # Read it directly rather than through `_fvexport.tail_family`, which always
+    # looks under `harness_paths.FAIR_DIR`, not this test's `tmp_path` build.
+    meta = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
+    assert meta["provenance"]["overrides_non_default"]["tail_family"] == "normal"
+
+    z = f.standardise(j["s"].to_numpy(), j["strike"].to_numpy(), j["sigma"].to_numpy())
+    assert (z > 0).sum() > 20 and (z < 0).sum() > 20, (
+        "sample is one-sided; can't rule out a sign error cancelling")
+
+    # family="t" (the pre-fix default) must NOT reproduce p_quoted: this is the
+    # regression check - if this assertion starts failing, the bug is back
+    p_wrong = link._prob(z, j["nu"].to_numpy(), j["mu"].to_numpy(),
+                         j["sigma_t"].to_numpy(), family="t")
+    assert not np.allclose(p_wrong, j["p_quoted"].to_numpy(), atol=1e-6), (
+        "the Student-t form should NOT match a normal-family export; if it does, "
+        "the bug this test exists to catch has resurfaced")
+
+    p_right = link._prob(z, j["nu"].to_numpy(), j["mu"].to_numpy(),
+                         j["sigma_t"].to_numpy(), family="normal")
+    assert np.allclose(p_right, j["p_quoted"].to_numpy(), atol=1e-9), (
+        "the block chain disagrees with the normal-family export at the venue strike")
+
+
+@pytest.mark.slow
 def test_precompute_covers_every_bucket_and_is_causal():
     import polars as pl
 

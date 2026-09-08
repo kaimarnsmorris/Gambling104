@@ -32,6 +32,23 @@ bit-identical to `fv-1.0.0` — `tests/test_golden.py` enforces that.
 
 ## Traps and gotchas
 
+**`alpha_half`, `alpha_x2` and `no_alpha` are currently inert on the real-panel
+export.** `export/build_export.py` calls `evaluate(..., book=None)`, so `m_Y` is
+zero on every row of every variant's export, including baseline - there is no
+order-book imbalance for `alpha_scale` to scale, so these three variants score
+bit-for-bit identical to baseline no matter what `alpha_scale` is set to. The
+precise reason: top-of-book imbalance is `I = ln(bid_size / ask_size)`, which
+needs SIZES, and the Polymarket 5 m book panel this export reads
+(`backtesting_5m/data/book_5m_100ms.parquet`) carries no size column at all -
+`backtesting_5m/data/README.md` says so explicitly (L1 price only). This is not
+a permanent limit: the venue L1 source the harness uses elsewhere
+(`stream_venue_l1`) DOES carry sizes (`bn_spot_bid_sz`/`ask_sz` and friends), so
+these three variants become meaningful the moment a book feed with sizes is
+wired into `build_export`'s `evaluate()` call instead of `book=None`. Until
+then, a null result from any of the three is silence about missing plumbing,
+not evidence the fitted alpha term is worthless - do not delete these variants
+on the strength of that null result.
+
 **`eps_scale` moves the variance, not the mean.** `eps_bar = c * eps_last`, and
 `c = w @ rho_at(ages)` depends only on the fitted autocorrelation - it never
 sees sigma. `eps_conditional` is always called with `sigma=1.0`, and the actual

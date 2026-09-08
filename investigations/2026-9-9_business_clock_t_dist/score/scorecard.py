@@ -7,6 +7,7 @@ resolution (see tests/test_scorecard.py).
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -64,8 +65,43 @@ def settlements(t0: int, t1: int) -> pl.DataFrame:
         (pl.col("settle") > pl.col("strike")).alias("up")).drop_nulls("settle")
 
 
-def _p_at(z, nu, mu, sg):
+def _p_at(z, nu, mu, sg, family: str = "t"):
+    """P(up) at `z`, in the family the variant actually fits.
+
+    Fix-round 1: this used to call `stats.t.cdf` unconditionally, which silently
+    scored `tail_family="normal"` variants (e.g. `normal_tail`) as if they were
+    baseline, because `fvmodel/overrides.py::_scaled_tail` leaves `(nu, mu, sigma)`
+    numerically unchanged for that family - it only flips an in-memory `.family`
+    flag the export can't carry.
+
+    Derivation of the `family == "normal"` branch, matching
+    `fvmodel/tails.py::SettlementTail.prob_up`: that method computes `q = y_star /
+    sqrt(var_y)` and returns `1 - norm.cdf(q)` for the normal family, ignoring
+    `(mu, sigma)` entirely. The export sets `y_star = (K - s) / (p_ref * omega)`
+    and `sigma = sqrt(var_y) * p_ref * omega`, so `q = y_star / sqrt(var_y) =
+    (K - s) / sigma = -z` (with `z = (s - K) / sigma`, this module's convention).
+    So `P(up) = 1 - norm.cdf(-z) = norm.cdf(z)` by standard-normal symmetry, with
+    no dependence on `(mu, sigma_t)` at all - see `link.py::_prob` for the same
+    derivation, kept in sync deliberately (see
+    tests/test_scorecard.py::test_p_at_branches_on_family_fix_round_1).
+    """
+    if family == "normal":
+        return stats.norm.cdf(np.asarray(z, dtype=np.float64))
     return stats.t.cdf((z + mu) / np.maximum(sg, 1e-12), df=nu)
+
+
+def _read_tail_family(export_path) -> str:
+    """The variant's tail family, from the export's own sidecar JSON - the same
+    per-variant-constant mechanism `_fvexport.temperature` uses, read directly here
+    (rather than through `_fvexport`, which always resolves against the harness's
+    canonical `FAIR_DIR`) so this also works for an arbitrary `export_path`, such as
+    `runs/select/*.parquet` or a test's `tmp_path` build."""
+    meta_path = Path(export_path).with_suffix(".json")
+    if not meta_path.exists():
+        return "t"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    return str(meta.get("provenance", {}).get("overrides_non_default", {})
+              .get("tail_family", "t"))
 
 
 def proxy_pnl(p_model, p_market, up, edge: float, fee_rate: float = BASE_FEE_RATE,
@@ -96,6 +132,7 @@ def proxy_pnl(p_model, p_market, up, edge: float, fee_rate: float = BASE_FEE_RAT
 
 
 def score_variant(name: str, export_path: Path, ref_path: Path = None) -> dict:
+    family = _read_tail_family(export_path)
     df = pl.read_parquet(export_path).filter(pl.col("ok"))
     t0 = int(df["open_ts"].min())
     t1 = int(df["open_ts"].max()) + MARKET_LEN
@@ -119,7 +156,7 @@ def score_variant(name: str, export_path: Path, ref_path: Path = None) -> dict:
     up = d["up"].to_numpy().astype(np.float64)
     tte = MARKET_LEN - d["t_s"].to_numpy()
     z = (s - K) / np.maximum(sg, 1e-300)
-    p = _p_at(z, nu, mu, sgt)
+    p = _p_at(z, nu, mu, sgt, family)
 
     out = {"variant": name, "n_rows": len(d),
            "n_markets": int(d["market_id"].n_unique()),
@@ -130,7 +167,7 @@ def score_variant(name: str, export_path: Path, ref_path: Path = None) -> dict:
     ll, br = [], []
     for c in GRID:
         Kc = s - c * sd_ref
-        pc = _p_at((s - Kc) / np.maximum(sg, 1e-300), nu, mu, sgt)
+        pc = _p_at((s - Kc) / np.maximum(sg, 1e-300), nu, mu, sgt, family)
         uc = (d["settle"].to_numpy() > Kc).astype(np.float64)
         ll.append(log_loss(pc, uc))
         br.append(brier(pc, uc))
@@ -201,7 +238,7 @@ def book_mid(d: pl.DataFrame) -> np.ndarray:
     `t_ms` is computed with the vectorised Polars expression
     `(t_s * 1000 + 100).clip(0, None)` rather than a per-row Python callback over
     `export.build_export.usable_t_ms` - the two must agree everywhere (see
-    tests/test_scorecard.py::test_book_mid_t_ms_matches_usable_t_ms), and the
+    tests/test_scorecard.py::test_vectorised_t_ms_matches_usable_t_ms), and the
     vectorised form is what keeps this join from dominating the scorecard's runtime
     over ~1.5 M rows.
     """

@@ -4,3 +4,8 @@ overrides: {alpha_scale: 0.5}
 notes: >
   Half the location term. Brackets alpha_x2, so the three alpha variants read as
   a crude one-dimensional profile of the right scale.
+
+  CURRENTLY INERT on the real-panel export: export/build_export.py calls
+  evaluate(..., book=None), so m_Y is zero on every row and there is nothing
+  for alpha_scale to scale. See variants/README.md's "book-size gap" note. A
+  null result here is not evidence about the fitted alpha term.
