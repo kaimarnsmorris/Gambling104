@@ -14,11 +14,12 @@ from .alpha import AlphaModel  # noqa: F401
 from .build import build_model, reliability, score  # noqa: F401
 from .chainlink import EpsModel, FilterParams, PrintFilter  # noqa: F401
 from .fairvalue import (FairValue, FairValueModel, FVState, Market,  # noqa: F401
-                        Switches, fair_value)
+                        fair_value)
+from .overrides import Overrides, apply_overrides  # noqa: F401
 from .tails import SettlementTail  # noqa: F401
 from .weights import Settlement, settlement_weights  # noqa: F401
 
 __all__ = ["AlphaModel", "EpsModel", "FairValue", "FairValueModel", "FVState",
-           "FilterParams", "Market", "PrintFilter", "Settlement", "SettlementTail",
-           "Switches", "build_model", "fair_value", "reliability", "score",
-           "settlement_weights"]
+           "FilterParams", "Market", "Overrides", "PrintFilter", "Settlement",
+           "SettlementTail", "apply_overrides", "build_model", "fair_value",
+           "reliability", "score", "settlement_weights"]

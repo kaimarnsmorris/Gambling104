@@ -38,6 +38,8 @@ import numpy as np
 
 from .base import BP
 
+EPS_MODES = ("full", "unconditional", "none")
+
 try:                                                          # pragma: no cover
     from numba import njit
 except ImportError:                                           # pragma: no cover
@@ -367,17 +369,16 @@ def eps_conditional(model: EpsModel, ages: np.ndarray, weights: np.ndarray,
         E[eps_bar | eps_t] = c * eps_t
         Var(eps_bar | eps_t) = var        (already scaled by sigma^2)
 
-    `mode` selects the ablations: "full" is the model, "iid" drops the correlation
-    between components, "unconditional" keeps the correlation but forgets `eps_t`, and
-    "none" removes the term.
+    `mode` selects the ablations: "full" is the model, "unconditional" keeps the
+    correlation but forgets `eps_t`, and "none" removes the term.
     """
+    if mode not in EPS_MODES:
+        raise ValueError("eps mode must be one of %s, got %r" % (EPS_MODES, mode))
     if mode == "none" or weights.size == 0:
         return 0.0, 0.0
     a = np.asarray(ages, dtype=np.float64)
     w = np.asarray(weights, dtype=np.float64)
     s2 = float(sigma) ** 2
-    if mode == "iid":
-        return 0.0, s2 * float(w @ w)
     R = model.rho_at(np.abs(a[:, None] - a[None, :]))
     if mode == "unconditional":
         return 0.0, s2 * float(w @ R @ w)

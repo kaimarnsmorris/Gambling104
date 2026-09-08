@@ -107,6 +107,11 @@ class Window:
             d_lvl = logc - self.Fd
             self.b = basis_series(d_lvl, usable, fp.basis_hl_s, lag_s=LAG_S)
             self.eps = np.where(usable & np.isfinite(self.b), d_lvl - self.b, np.nan)
+            # the 15 s tracker, so basis_tracker="alt" is a selection rather than
+            # a refit; it costs one more pass over the same series
+            self.b_alt = basis_series(d_lvl, usable, fp.basis_hl_alt_s, lag_s=LAG_S)
+            self.eps_alt = np.where(usable & np.isfinite(self.b_alt),
+                                    d_lvl - self.b_alt, np.nan)
             # the step-filled log series is what a settlement actually averages
             self.logc_step = np.log(np.maximum(self.cl_step, 1e-12))
             self.eps_step = _ffill_arr(self.eps)
@@ -146,7 +151,7 @@ class Window:
         for a in ("logp", "logc_step", "spot_ok"):
             if hasattr(self, a):
                 setattr(self, a, None)
-        for a in ("b", "eps", "eps_step"):
+        for a in ("b", "eps", "eps_step", "b_alt", "eps_alt"):
             if getattr(self, a, None) is not None:
                 setattr(self, a, np.asarray(getattr(self, a), dtype=np.float32))
 
@@ -203,9 +208,9 @@ def market_grid(win: Window, L: int, step: int = 300,
     return T[(T - L >= win.ts[0]) & (T <= win.ts[-1])]
 
 
-def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
+def evaluate(win: Window, model, kind: str, L: int, n: int,
              expiries: np.ndarray = None, twap_len: int = 60,
-             book: dict = None) -> Cell:
+             book: dict = None, emit_all: bool = False) -> Cell:
     """One row per synthetic market: the model's quote and what actually settled.
 
     `book`, when given, holds `imbalance` and `px_age_s` as full-window arrays indexed
@@ -213,6 +218,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     """
     from .fairvalue import ALPHA_MAX
 
+    ov = model.ov or Overrides()
     T = market_grid(win, L) if expiries is None else np.asarray(expiries)
     iT = win.i(T)
     it = iT - n                                             # the quote second
@@ -222,34 +228,24 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     Lw = int(twap_len)
 
     # The market-observable baseline is the same model on a counterparty's information
-    # set: the received prints and nothing else. Its most recent price is the print it
-    # received LAG_S seconds ago, so it quotes from that second - everything since,
-    # including the moves the perp feed already shows, is unknown to it. That is the
-    # whole of the difference, and it is what makes the gap "the lag edge" rather than
-    # an arbitrary handicap.
-    mo = bool(sw.market_observable) and kind == "chainlink_twap60"
-    it_q = it - LAG_S if mo else it
-    n_q = n + LAG_S if mo else n
+    # set: the received prints and nothing else, so it neither reconstructs an
+    # in-transit print from the exchange feed nor conditions the residual on one -
+    # exactly the two things `information_set` gates below, mirroring the single-quote
+    # path so the two stay checkable against each other (see
+    # tests/test_engine_matches_fairvalue.py).
+    it_q, n_q = it, n
 
     # ---- settlement weights, identical for every market in the cell -----------
-    if kind == "chainlink_twap60" and not sw.composed_weights:
-        s = settlement_weights("perp_twap", n_q, L=Lw)
-    else:
-        s = settlement_weights(kind, n_q, model.fp.to_dict(), L=Lw)
+    s = settlement_weights(kind, n_q, model.fp.to_dict(), L=Lw)
 
     # ---- what is realised, and what is known at the quote ---------------------
     if kind == "chainlink_twap60":
         lvl = win.cl_step
         n_recv = int(np.clip(Lw - n - LAG_S, 0, Lw))
-        if mo:
-            # the counterparty prices off the last print it holds; with no exchange
-            # feed the martingale forecast of every later print is that print
-            x_t = np.log(np.maximum(lvl[it - LAG_S], 1e-12))
-            b_t = np.zeros(it.size)
-        else:
-            x_t = win.lxf[it]
-            b_t = win.b[it] if sw.use_basis else np.zeros(it.size)
-            b_t = np.where(np.isfinite(b_t), b_t, 0.0)
+        x_t = win.lxf[it]
+        src = {"main": win.b, "alt": win.b_alt}.get(ov.basis_tracker)
+        b_t = np.zeros(it.size) if src is None else src[it]
+        b_t = np.where(np.isfinite(b_t), b_t, 0.0)
         p_ref = np.exp(x_t + b_t)
         strike = lvl[iO]
         settle = _window_mean(lvl, iT, Lw)
@@ -274,27 +270,24 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     # ---- the deterministic carry ---------------------------------------------
     d_bar = np.zeros(it.size)
     n_transit = 0
-    if kind == "chainlink_twap60" and not mo:
+    if kind == "chainlink_twap60":
         lam = model.fp.lam
         j = np.arange(n_comp - n_recv, dtype=np.float64)     # unknown components
         K = n - j - model.fp.delta_s
         fut = K > 0
         n_transit = int((~fut).sum())
         d_bar = (lam ** K[fut]).sum() * (win.F[it] - x_t)
-        if sw.use_reconstruction and n_transit:
+        if ov.reconstruct_in_transit and ov.information_set == "full" and n_transit:
             for jj in j[~fut]:
                 d_bar = d_bar + (win.Fd[iT - int(jj)] - x_t)
         d_bar = d_bar / n_comp / omega
-        if not sw.composed_weights:
-            d_bar = np.zeros(it.size)
 
     # ---- variance -------------------------------------------------------------
     logv = win.logv_at(it_q)                     # variant-invariant: see spec 4.3
-    m_blk = block_length(kind if sw.composed_weights else "perp_twap", n_q, Lw, PAD)
+    m_blk = block_length(kind, n_q, Lw, PAD)
     iv_head, xi = win.clock.forward_block(logv, it_q, n_q, m_blk,
                                           cap_c=model.xi_cap_c,
                                           cap_i=model.xi_cap_i)
-    ov = model.ov or Overrides()
     if xi.size:
         u_blk = np.arange(n_q - xi.shape[1] + 1, n_q + 1, dtype=np.int64)
         dT_blk = win.clock.dT_at(it_q, u_blk) * 86400.0
@@ -303,10 +296,10 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
         xi = xi_adjust(ov, xi, dT_blk, xi_bar)
         if ov.kappa_vol != 0.0:
             iv_head = iv_head * np.exp(2.0 * ov.kappa_vol)
-    ratio = model.input_var_ratio if (kind == "chainlink_twap60" and sw.use_blend) else 1.0
+    ratio = model.input_var_ratio if kind == "chainlink_twap60" else 1.0
     act = win.bv.act[it_q]
     var_ret = np.empty(it.size)
-    if sw.rho_mode == "conditional" and "act0" in model.rho:
+    if ov.rho_kernel == "conditional" and "act0" in model.rho:
         grp = np.digitize(act, model.act_cuts)
         for g in range(3):
             m = grp == g
@@ -315,17 +308,19 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
                                                  model.rho["act%d" % g], n_q)
     else:
         var_ret[:] = settlement_variance(iv_head, xi * ratio, W,
-                                         model.rho_for(1.0, sw.rho_mode), n_q)
+                                         model.rho_for(1.0), n_q)
 
     # ---- the residual ---------------------------------------------------------
     eps_bar = np.zeros(it.size)
     var_eps = np.zeros(it.size)
     var_basis = 0.0
-    if kind == "chainlink_twap60" and sw.eps_mode != "none":
+    if kind == "chainlink_twap60" and model.eps.sigma_bp != 0.0:
         stamps = T[:, None] - np.arange(n_comp - n_recv)[None, :]
         ages = (stamps[0] - (T[0] - n - LAG_S)).astype(np.float64)
         w = np.full(ages.size, 1.0 / max(ages.size, 1))
-        mode = sw.eps_mode if not sw.market_observable else "unconditional"
+        mode = ("none" if model.eps.sigma_bp == 0.0
+                else ("full" if (ov.eps_condition and ov.information_set == "full")
+                      else "unconditional"))
         c, q_unit = eps_conditional(model.eps, ages, w, 1.0, mode)
         # the same local-volatility definition `fair_value` uses: the business time of
         # the next second, including the activity kick decayed forward
@@ -335,7 +330,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
         var_eps = q_unit * sig ** 2
         eps_last = win.eps_step[it - LAG_S]
         eps_bar = c * np.where(np.isfinite(eps_last), eps_last, 0.0)
-        if sw.use_basis:
+        if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
             var_basis = basis_drift_window_var(model, ages, w)
 
@@ -343,7 +338,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
 
     # ---- the order-book term ---------------------------------------------------
     m_Y = np.zeros(it.size)
-    if sw.use_alpha and book is not None:
+    if book is not None:
         # beta saturates, so only the seconds just after the quote origin carry a
         # non-zero increment; `book` holds full-window arrays indexed by window second
         na = min(n_q, ALPHA_MAX)
@@ -363,9 +358,8 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
         # {settle > strike} is exact either way, but the *mean* of y is not g_bar's
         y_raw = (strike / p_ref - A_R) / omega - 1.0
         y_act = (settle / p_ref - A_R) / omega - 1.0
-        if sw.jensen:
-            y_raw = y_raw - 0.5 * var_y
-            y_act = y_act - 0.5 * var_y
+        y_raw = y_raw - 0.5 * var_y
+        y_act = y_act - 0.5 * var_y
     y_star = y_raw - d_bar - m_Y - eps_bar
     resid = y_act - d_bar - m_Y - eps_bar
 
@@ -373,7 +367,6 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     z = np.log(np.maximum(D, 1e-12))
     tail = model.tail_for(kind)
     p_up = tail.prob_up(y_star, var_y, z)
-    p_quoted = quoted_prob(ov, p_up)
     up = settle > strike
 
     ok = (np.isfinite(y_star) & np.isfinite(var_y) & np.isfinite(settle)
@@ -381,22 +374,29 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     if kind == "chainlink_twap60":
         ok &= _window_all_finite(win.cl_step, iT, Lw) & np.isfinite(lvl[iO])
         ok &= ~_window_any(win.excluded, iT, Lw) & ~win.excluded[it]
-    return Cell(kind, L, n, {
-        "T": T[ok], "t": T[ok] - n, "p_up": p_up[ok], "var_y": var_y[ok],
-        "p_model": p_up[ok], "p_quoted": np.asarray(p_quoted)[ok],
-        "y_star": y_star[ok], "resid": resid[ok], "z": z[ok], "up": up[ok],
-        "omega": np.full(int(ok.sum()), omega), "n_known": np.full(int(ok.sum()), n_recv),
-        "n_transit": np.full(int(ok.sum()), n_transit),
-        "m_Y": m_Y[ok] if np.ndim(m_Y) else np.zeros(int(ok.sum())),
-        "eps_bar": eps_bar[ok],
-        "var_eps": (var_eps[ok] if np.ndim(var_eps) else
-                    np.full(int(ok.sum()), var_eps)),
-        "var_basis": np.full(int(ok.sum()), float(var_basis)),
-        "carry": d_bar[ok] if
-        np.ndim(d_bar) else np.zeros(int(ok.sum())),
-        "act": act[ok], "settle": settle[ok], "strike": strike[ok],
-        "it": it[ok], "it_q": it_q[ok], "p_ref": p_ref[ok],
-    })
+
+    nu_, mu_, sg_ = (np.broadcast_to(np.asarray(a), z.shape) for a in tail.params(z))
+    p_quoted = np.asarray(quoted_prob(ov, p_up), dtype=np.float64)
+    sel = np.ones(ok.size, dtype=bool) if emit_all else ok
+    m = int(sel.sum())
+    rows = {
+        "T": T[sel], "t": T[sel] - n, "p_up": p_up[sel], "p_model": p_up[sel],
+        "p_quoted": p_quoted[sel], "var_y": var_y[sel], "y_star": y_star[sel],
+        "resid": resid[sel], "z": z[sel], "up": up[sel],
+        "nu": np.asarray(nu_)[sel], "mu": np.asarray(mu_)[sel],
+        "sigma_t": np.asarray(sg_)[sel],
+        "omega": np.full(m, omega), "n_known": np.full(m, n_recv),
+        "n_transit": np.full(m, n_transit),
+        "m_Y": m_Y[sel] if np.ndim(m_Y) else np.zeros(m),
+        "eps_bar": eps_bar[sel],
+        "var_eps": var_eps[sel] if np.ndim(var_eps) else np.full(m, var_eps),
+        "var_basis": np.full(m, float(var_basis)),
+        "carry": d_bar[sel] if np.ndim(d_bar) else np.zeros(m),
+        "act": act[sel], "settle": settle[sel], "strike": strike[sel],
+        "it": it[sel], "it_q": it_q[sel], "p_ref": p_ref[sel],
+        "ok": ok[sel],
+    }
+    return Cell(kind, L, n, rows)
 
 
 # --------------------------------------------------------------------- small helpers
@@ -441,6 +441,7 @@ def state_at(win: "Window", it: int, model) -> "object":
         f.hist = win.F[it - HIST + 1:it + 1][::-1].copy()
         f.xhist = win.lxf[it - HIST + 1:it + 1][::-1].copy()
         f.b = float(win.b[it]) if np.isfinite(win.b[it]) else np.nan
+        f.b_alt = float(win.b_alt[it]) if np.isfinite(win.b_alt[it]) else np.nan
         e = win.eps_step[it - LAG_S]
         f.eps_last = float(e) if np.isfinite(e) else 0.0
         f.eps_last_ts = int(win.ts[it]) - LAG_S

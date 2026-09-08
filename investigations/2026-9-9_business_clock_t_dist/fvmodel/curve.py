@@ -56,7 +56,12 @@ def _iv_from_cum(fm, dT, logv: np.ndarray) -> np.ndarray:
     """The bias-corrected integrated variance at business ages `dT`, one register row."""
     cum = fm.cumulative(np.asarray(logv, dtype=np.float64))
     z = np.log(np.maximum(np.asarray(dT, dtype=np.float64), 1e-12))
-    return np.interp(z, fm.z_grid, cum) * np.exp(fm.log_bias(z))
+    # `log_bias` fits a spline via scipy's BSpline.design_matrix, which insists on a
+    # 1-D evaluation array; the batch path (unconditional_xi under shrink_w) hands
+    # this a 2-D block of (market, second), so it is flattened for the spline and
+    # reshaped back rather than restricting every caller to a single row.
+    bias = fm.log_bias(z.ravel()).reshape(z.shape) if z.ndim > 1 else fm.log_bias(z)
+    return np.interp(z, fm.z_grid, cum) * np.exp(bias)
 
 
 def slow_index(hl_business, target_s: float = 3600.0) -> int:

@@ -54,30 +54,6 @@ ALPHA_MAX = 300      # clock seconds past which beta(dT) is certainly saturated
 
 # ==================================================================== configuration
 @dataclass
-class Switches:
-    """Every ablation the evaluation runs, in one place, defaulting to the full model."""
-    eps_mode: str = "full"            # full | unconditional | iid | none
-    use_basis: bool = True
-    use_blend: bool = True            # False: no input-variance ratio (see 13_eval)
-    use_reconstruction: bool = True   # reconstruct prints stamped but not received
-    use_alpha: bool = True
-    rho_mode: str = "conditional"     # conditional | unconditional | zero
-    tail_mode: str = "fitted"         # fitted | normal | v2_twap
-    composed_weights: bool = True     # False: the un-composed triangular ramp
-    market_observable: bool = False   # no perp feed: prints only, no reconstruction
-    jensen: bool = True               # second-order term for an arithmetic average
-
-    def label(self) -> str:
-        d = {"eps_mode": "full", "use_basis": True, "use_blend": True,
-             "use_reconstruction": True, "use_alpha": True, "rho_mode": "conditional",
-             "tail_mode": "fitted", "composed_weights": True,
-             "market_observable": False, "jensen": True}
-        off = [k for k, v in d.items() if getattr(self, k) != v]
-        return "full" if not off else "+".join(
-            "%s=%s" % (k, getattr(self, k)) for k in off)
-
-
-@dataclass
 class FairValueModel:
     """The v2.1 forecaster plus everything this project adds on top of it."""
     v2: object                                   # rvforecast.streaming.Model
@@ -156,10 +132,10 @@ class FairValue:
 
 # ========================================================================== the call
 def fair_value(state, market: Market, model: FairValueModel,
-               sw: Switches = None, t_now: int = None) -> FairValue:
+               t_now: int = None) -> FairValue:
     """Price one market from one state. See the module docstring for the algebra."""
-    sw = sw or Switches()
     t = int(t_now if t_now is not None else state.v2.ts)
+    ov = model.ov or Overrides()
     n = int(market.expiry_ts) - t
     kind = market.kind
     Lw = int(market.L)
@@ -168,17 +144,15 @@ def fair_value(state, market: Market, model: FairValueModel,
         raise ValueError("the market has already expired at this quote time")
 
     # ---- the weights ---------------------------------------------------------
-    if kind == "chainlink_twap60" and not sw.composed_weights:
-        s = settlement_weights("perp_twap", n, L=Lw)
-        s.kind = "chainlink_twap60"
-        s.carry = 0.0
-    else:
-        s = settlement_weights(kind, n, model.fp.to_dict(), L=Lw)
+    s = settlement_weights(kind, n, model.fp.to_dict(), L=Lw)
 
     # ---- what is already known ----------------------------------------------
     x_t = state.filt.x if kind == "chainlink_twap60" else np.log(state.v2.last_close)
-    b_t = (state.filt.b if (kind == "chainlink_twap60" and sw.use_basis
-                            and np.isfinite(state.filt.b)) else 0.0)
+    if kind == "chainlink_twap60" and ov.basis_tracker != "off":
+        raw_b = state.filt.b if ov.basis_tracker == "main" else state.filt.b_alt
+        b_t = float(raw_b) if np.isfinite(raw_b) else 0.0
+    else:
+        b_t = 0.0
     p_ref = float(np.exp(x_t + b_t))
 
     n_known = 0
@@ -198,8 +172,8 @@ def fair_value(state, market: Market, model: FairValueModel,
                 continue
             K = n - j - model.fp.delta_s
             if K > 0.0:                                  # future print
-                d_sum += (lam ** K) * (state.filt.xf - x_t) if sw.composed_weights else 0.0
-            elif sw.use_reconstruction and not sw.market_observable:
+                d_sum += (lam ** K) * (state.filt.xf - x_t)
+            elif ov.reconstruct_in_transit and ov.information_set == "full":
                 n_transit += 1
                 f = state.filt.filtered_at(stamp - model.fp.delta_s)
                 d_sum += (f - x_t) if np.isfinite(f) else 0.0
@@ -226,10 +200,9 @@ def fair_value(state, market: Market, model: FairValueModel,
     # (brief section 4.2), which is what makes the bank variant-invariant and so
     # cacheable across every variant run. See the spec, section 4.3.
     v_state = state.v2
-    m_blk = block_length(kind if sw.composed_weights else "perp_twap", n, Lw, PAD)
+    m_blk = block_length(kind, n, Lw, PAD)
     iv_head, xi = forward_block(model.v2, v_state, t, n, m_blk,
                                 cap_c=model.xi_cap_c, cap_i=model.xi_cap_i)
-    ov = model.ov or Overrides()
     if xi.size:
         u_blk = np.arange(n - xi.size + 1, n + 1, dtype=np.int64)
         dT_blk = dT_at(model.v2, v_state, t, u_blk) * 86400.0     # business seconds
@@ -240,24 +213,26 @@ def fair_value(state, market: Market, model: FairValueModel,
         # shrink knobs are defined on the block, where the settlement weights live
         if ov.kappa_vol != 0.0:
             iv_head = iv_head * np.exp(2.0 * ov.kappa_vol)
-    rho = model.rho_for(state.v2.act, sw.rho_mode)
-    ratio = model.input_var_ratio if (kind == "chainlink_twap60" and sw.use_blend) else 1.0
+    rho = model.rho_for(state.v2.act)
+    ratio = model.input_var_ratio if kind == "chainlink_twap60" else 1.0
     var_ret = float(settlement_variance(np.array([iv_head]), xi[None, :] * ratio,
                                         W, rho, n)[0])
 
     # ---- the residual --------------------------------------------------------
     eps_bar, var_eps, var_basis = 0.0, 0.0, 0.0
-    if kind == "chainlink_twap60" and sw.eps_mode != "none" and unknown_ages:
+    if kind == "chainlink_twap60" and model.eps.sigma_bp != 0.0 and unknown_ages:
         v_loc = float(np.sqrt(max(state.v2.v[model.eps.reg_index], 0.0)
                               * max(dT_at(model.v2, v_state, t, np.array([1]))[0], 1e-12)))
         sig = float(model.eps.sigma_at(v_loc))
         ref_ts = state.filt.eps_last_ts if state.filt.eps_last_ts is not None else t
         ages = np.array([a - ref_ts for a in unknown_ages], dtype=np.float64)
         w = np.full(ages.size, 1.0 / max(n_unknown, 1))
-        mode = sw.eps_mode if not sw.market_observable else "unconditional"
+        mode = ("none" if model.eps.sigma_bp == 0.0
+                else ("full" if (ov.eps_condition and ov.information_set == "full")
+                      else "unconditional"))
         c, var_eps = eps_conditional(model.eps, ages, w, sig, mode)
         eps_bar = c * state.filt.eps_last
-        if sw.use_basis:
+        if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
             var_basis = basis_drift_window_var(model, ages, w)
 
@@ -265,7 +240,7 @@ def fair_value(state, market: Market, model: FairValueModel,
 
     # ---- the order-book location term ---------------------------------------
     m_Y = 0.0
-    if sw.use_alpha and market.book_snapshot:
+    if market.book_snapshot is not None:
         # beta saturates, so only the seconds *just after* the quote origin carry a
         # non-zero increment; past ALPHA_MAX the curve is flat and adds nothing however
         # long the market runs
@@ -284,8 +259,7 @@ def fair_value(state, market: Market, model: FairValueModel,
         # an arithmetic mean of prices: the linearised y carries half the mean square
         # of the component moves in its own mean, so the strike side takes it back out
         y_raw = (market.strike / p_ref - A_R) / omega - 1.0
-        if sw.jensen:
-            y_raw -= 0.5 * var_y
+        y_raw -= 0.5 * var_y
     y_star = y_raw - d_bar - m_Y - eps_bar
 
     # ---- the tail ------------------------------------------------------------
@@ -304,7 +278,7 @@ def fair_value(state, market: Market, model: FairValueModel,
                      tail=(float(nu), float(mu), float(sg)), p_ref=p_ref,
                      basis=float(getattr(state.filt, "b", float("nan"))),
                      basis_alt=float(getattr(state.filt, "b_alt", float("nan"))),
-                     switches=sw.label(), p_model=p_model, p_quoted=p_quoted)
+                     switches=ov.label(), p_model=p_model, p_quoted=p_quoted)
 
 
 # ============================================================== the composite state

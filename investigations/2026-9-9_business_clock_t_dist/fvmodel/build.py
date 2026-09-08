@@ -21,35 +21,19 @@ KINDS = ("chainlink_twap60", "perp_twap", "perp_single")
 
 
 def build_model(eps_fit: str = "train", tails: dict = None,
-                basis_hl_s: float = None,
-                input_mode: str = "blend") -> FairValueModel:
-    """The shipped model: v2.1 plus the filter, the residual, the kernels and the alpha.
-
-    `input_mode="perp_only"` returns the same object built on the perp-only print model
-    - its own filter constants, its own basis drift and its own residual - which is what
-    the "perp-only input" ablation needs. Anything less would score the blend's residual
-    against a filter it was not fitted for.
-    """
+                basis_hl_s: float = None) -> FairValueModel:
+    """The shipped model: v2.1 plus the filter, the residual, the kernels and the alpha."""
     from rvforecast.streaming import Model
 
     params = load_params()
     pm = json.load(open(TABLES_DIR / "print_model.json"))
-    if input_mode == "perp_only":
-        po = pm["perp_only"]
-        fp = FilterParams.from_dict(dict(po["filter"], w_spot=0.0))
-        fp.basis_hl_s = float(po["half_life_s"])
-        fp.lag_s = int(po["lag_s"])
-        eps = EpsModel.from_dict(pm["eps"]["perp_only"])
-        eps.meta = dict(eps.meta or {})
-        eps.meta["basis_drift"] = po["drift_rows"]
-    else:
-        fp = FilterParams.from_dict(pm["filter"]["shipped"])
-        fp.basis_hl_s = float(basis_hl_s if basis_hl_s is not None
-                              else pm["basis"]["half_life_s"])
-        fp.lag_s = int(pm["basis"]["lag_s"])
-        eps = EpsModel.from_dict(pm["eps"][eps_fit])
-        eps.meta = dict(eps.meta or {})
-        eps.meta["basis_drift"] = pm["basis"]["drift_rows"]
+    fp = FilterParams.from_dict(pm["filter"]["shipped"])
+    fp.basis_hl_s = float(basis_hl_s if basis_hl_s is not None
+                          else pm["basis"]["half_life_s"])
+    fp.lag_s = int(pm["basis"]["lag_s"])
+    eps = EpsModel.from_dict(pm["eps"][eps_fit])
+    eps.meta = dict(eps.meta or {})
+    eps.meta["basis_drift"] = pm["basis"]["drift_rows"]
 
     rho = {}
     ivr = 1.0
