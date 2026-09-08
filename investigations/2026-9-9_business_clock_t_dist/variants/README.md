@@ -15,7 +15,7 @@ bit-identical to `fv-1.0.0` — `tests/test_golden.py` enforces that.
 | `shrink_w` | positive shrinks toward the unconditional level | 0 … 1 | the same cell as `kappa_vol_short`, by a different mechanism |
 | `shrink_decay_s` | larger = the shrink reaches further out | 15 … 300 | how far up the horizon the shrink is felt |
 | `rho_kernel` | `off` removes the variance inflation | — | `E[resid²/Var_Y]` upward when off |
-| `eps_scale` | scales σ_ε only, so the ε **variance** scales as `eps_scale²`; the conditional mean is untouched (see the note below); at `eps_scale = 0` the whole term - mean and variance - is switched off by the sigma gate (R1) | 0 … 2 | Var_Y in the last ~10 s; the near-strike cell |
+| `eps_scale` | scales σ_ε only, so the ε **variance** scales as `eps_scale²`; the conditional mean is untouched (see the note below); at `eps_scale = 0` the ε term — mean and variance — is switched off by the sigma gate (R1), and **nothing else is**: `var_basis` answers to `basis_tracker` alone | 0 … 2 | Var_Y in the last ~10 s; the near-strike cell |
 | `eps_condition` | false forgets the last observed residual | — | `eps_bar`, and log-loss near expiry |
 | `basis_tracker` | `main` 60 s, `alt` 15 s, `off` no basis | — | the level terms, not the variance — but see the note below, it is not only the level |
 | `information_set` | `prints_only` is the counterparty (R9) | — | everything; this is the lag edge |
@@ -37,8 +37,12 @@ export.** `export/build_export.py` calls `evaluate(..., book=None)`, so `m_Y` is
 zero on every row of every variant's export, including baseline - there is no
 order-book imbalance for `alpha_scale` to scale, so these three variants score
 bit-for-bit identical to baseline no matter what `alpha_scale` is set to. The
-precise reason: top-of-book imbalance is `I = ln(bid_size / ask_size)`, which
-needs SIZES, and the Polymarket 5 m book panel this export reads
+precise reason: top-of-book imbalance is `I = ln(ask_size / bid_size)` — the
+sign `scripts/12_alpha.py` fitted (`"imb": np.log(av[j] / bv[j])`, ask volume
+over bid volume) and the sign `fvmodel/alpha.py` documents, which is why the
+saturated `beta0` is **negative** (−0.19 bp per unit of I: heavier size resting
+on the ask predicts a lower price). It needs SIZES, and the Polymarket 5 m book
+panel this export reads
 (`backtesting_5m/data/book_5m_100ms.parquet`) carries no size column at all -
 `backtesting_5m/data/README.md` says so explicitly (L1 price only). This is not
 a permanent limit: the venue L1 source the harness uses elsewhere
@@ -56,10 +60,18 @@ variance is `q_unit * sigma_at(v)**2` computed afterward, so `eps_scale` reaches
 only that second factor: `eps_x2`'s variance is ×4, not ×2, and its mean
 coefficient is bit-identical to baseline's. The only way `eps_scale` touches the
 mean channel is at `eps_scale = 0`, where `model.eps.sigma_bp == 0.0` gates the
-whole ε block off in `engine.py` - mean and variance both, because the term
-never runs, not because the scale reached the mean. If you want to test the
+ε block off in `engine.py` - mean and variance both, because the term never
+runs, not because the scale reached the mean. If you want to test the
 conditional-mean correction itself, use `eps_condition: false` instead - that is
 the knob for that question.
+
+The ε gate stops at ε. `var_basis` — the variance of the slow basis's own drift
+across the settlement window — is a different process with its own selector, and
+it sits *outside* the sigma gate in both pricing paths. It used to sit inside
+it, which made `eps_x0` silently switch off two channels while claiming one:
+measured at n = 60, baseline `var_basis` = 4.011e−11 and `eps_x0`'s was exactly
+0.0, about 13% of that variant's whole Var_Y reduction. `basis_tracker: off` is
+the knob that removes the basis channel.
 
 **`w_spot: 0.6` is not baseline.** The per-`w` table is the coarse grid, so it
 gives τ = 0.7872 where the shipped fine-refined value is τ = 0.8447. Leave
@@ -73,17 +85,35 @@ shape at the shortest horizons — those bins are already at the floor before th
 override is applied. Any effect you see there is `tail_scale` or `tail_family`
 territory, not `kappa_tail`'s.
 
-**`basis_tracker` moves more than the label suggests.** Selecting `alt`
-necessarily selects `eps_alt = d_lvl - b_alt` alongside `b_alt`; pairing one
-tracker's level with the other's residual would double-count. So `basis_alt`
-moves `eps_bar` and `var_eps`, and the carry, together with the tracked level —
-not the level in isolation.
+**`basis_tracker` moves the LEVEL channel only, and less than an earlier
+draft of this file claimed.** Selecting `alt` necessarily selects
+`eps_alt = d_lvl − b_alt` alongside `b_alt` — pairing one tracker's level with
+the other's residual would double-count (spec ruling 13) — so the conditional
+mean `eps_bar` moves with the tracked level. Nothing else does. Measured on the
+shipped selection-window export, `basis_alt` against `baseline`:
+
+| column | moves? |
+|---|---|
+| `eps_bar` | yes, max \|Δ\| 6.6e−5 |
+| `p_ref`, `s`, `sigma` | yes — but only because `p_ref = exp(x_t + b_t)` carries `b_t`; `sigma = sqrt(Var_Y)·p_ref·ω` inherits it as a scale factor |
+| `carry`, `var_eps`, `var_basis`, `m_Y` | **bit-for-bit identical** |
+| `Var_Y` itself | identical to 1.1e−15 relative |
+
+`var_eps = q_unit · sigma_at(v_loc)²` and `var_basis` both depend on the
+component ages and the fitted curves, never on which tracker supplied the level,
+so the variance channel cannot move; and the Chainlink carry is built from
+`win.F` and `x_t`, which carry no basis at all.
 
 **`temperature` never touches `p_model`.** It acts only in the quoting layer
 (`link`) and is reported as `p_quoted` beside `p_model` precisely so it cannot
 pollute a calibration statistic. If a temperature sweep ever shows identical
 PnL at every temperature, that is the bug signature — the knob is not reaching
-the quote.
+the quote. That was the case until the final fix round: `score/scorecard.py`
+priced its trading proxy off `p_model` and nothing under `score/` read the
+export's `p_quoted` column at all. The proxy now reads `p_quoted`; every
+calibration metric (log-loss, Brier, reliability, QLIKE, the level ratios)
+still runs on `p_model`, which is deliberate and is asserted by
+`tests/test_scorecard.py::test_temperature_moves_the_pnl_and_leaves_calibration_bit_identical`.
 
 **The near-expiry cell is thin.** Only about 6.2% of markets are still
 undecided (0.02 < p < 0.98) in the final 30 s, and median settlement sd falls
@@ -118,4 +148,16 @@ shipped variant set that `fvmodel.variants.list_variants()` reports.
 `--holdout` scores the reserved window (2026-08-26 .. 08-31) and refuses to run
 without `--i-know` — it is for the one chosen variant, once, at the end, not for
 iterating. A holdout run is appended to `runs/holdout_log.tsv` regardless of
-`--no-score`, so every attempt (successful or not) leaves a trail.
+`--no-score`, so every attempt (successful or not) leaves a trail. That file is
+**committed** (spec §8.1) even though the rest of `runs/` is ignored; see this
+folder's `.gitignore` for why the negation is shaped the way it is, and
+`tests/test_variants.py::test_the_holdout_log_is_committable` for the guard.
+
+## The harness handoff
+
+Two items are open with the harness team and are written up in
+`backtesting_5m/docs/fair-export-handoff.md`: the per-tick binding `link` needs
+(the harness calls `link(z)` with no tick index, and this tail's parameters are
+per-tick), and the export's timestamp contract, which `harness/core/episode.py`
+requires in writing before `fair_is_causal=True` may be set. That document is
+the written confirmation.

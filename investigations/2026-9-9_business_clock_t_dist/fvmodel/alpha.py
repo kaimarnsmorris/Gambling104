@@ -2,7 +2,11 @@
 
 The preliminary note's C4 section established two things about top-of-book imbalance
 `I = ln(ask size / bid size)` on this instrument, and both change how it should be
-parameterised:
+parameterised. That sign is the FITTED one - `scripts/12_alpha.py` builds the
+regressor as `np.log(av / bv)`, ask volume over bid volume - and it is why the
+saturated `beta0` below is NEGATIVE: size resting on the ask predicts a lower price.
+Reading it as `ln(bid/ask)` flips the sign of every quote the alpha term shifts.
+The two claims:
 
 * the alpha decays in **business time**, not clock time - matched on clock seconds the
   beta curves differ across clock-speed terciles by 23%, matched on business time by 7%;

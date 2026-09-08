@@ -7,6 +7,11 @@ notes: >
   boundary optimum, so this is the open question that a live comparison was meant
   to settle. Selecting the alt tracker selects its level AND its residual
   together (b_alt paired with eps_alt = d_lvl - b_alt); pairing one tracker's
-  level with the other's residual would double-count. Expected to move the level
-  terms - eps_bar and the carry, not just the tracked level - and not the
-  variance; m_Y is untouched.
+  level with the other's residual would double-count. Expected to move the
+  LEVEL channel only: eps_bar, and p_ref/s/sigma because p_ref = exp(x_t + b_t)
+  carries the tracked level as a scale factor. Measured, carry, var_eps,
+  var_basis and m_Y are all bit-for-bit identical to baseline and Var_Y itself
+  agrees to 1e-15 relative - an earlier draft of this note claimed the carry and
+  var_eps move, and they do not: the Chainlink carry is built from win.F and
+  x_t, which carry no basis, and the eps variance is q_unit * sigma_at(v_loc)^2,
+  which never sees the tracker.
