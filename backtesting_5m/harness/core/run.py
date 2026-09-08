@@ -5,6 +5,7 @@ from dataclasses import asdict, is_dataclass
 
 import pandas as pd
 
+from harness import paths
 from harness.core import provenance, stats
 from harness.core.loop import run_episode
 
@@ -13,6 +14,57 @@ from harness.core.loop import run_episode
 #: red_fast at +0.124, CI [+0.025, +0.229]). Carried on every run so no result
 #: leaves here pretending the replay clock is free.
 GRID_BIAS_USD_PER_MARKET = 0.13
+
+#: Where the spot build records the offset it was TOLD to use, per day.
+VENUE_OFFSETS_TSV = os.path.join(paths.RESULTS, "venue_vantage_offsets.tsv")
+
+#: The bound this repo can actually defend: data/results/vantage_offsets.tsv
+#: measured same-book inter-host drift on this infrastructure at roughly
+#: 0-74 ms. It is a bound on the plausible range, not a measurement of THIS
+#: offset, which no property of these two streams can recover.
+CLOCK_OFFSET_PLAUSIBLE_RANGE_MS = (0.0, 74.0)
+
+CLOCK_OFFSET_NOTE = (
+    "The venue-to-panel clock offset is a CONFIGURED ASSUMPTION, not a "
+    "measurement. It cannot be measured from these two streams: the panel "
+    "records receipt of Polymarket book updates and the venue feed records "
+    "receipt of Binance/Coinbase/OKX/Bybit updates on a different host, so "
+    "they share no event to align on, and cross-correlating them would "
+    "confound the offset with the spot-to-book response lag this harness "
+    "exists to study. The default is 0.0 s. This repo's own same-book "
+    "inter-host drift measurements bound the plausible range at 0-74 ms. "
+    "Every spot-derived number here is conditional on that assumption and "
+    "must be swept over that band the way latency and fill optimism are."
+)
+
+
+def _clock_offset_caveat(days):
+    """What offset this run's spot actually rests on, or an admission."""
+    caveat = {
+        "clock_offset_is_assumed_not_measured": CLOCK_OFFSET_NOTE,
+        "clock_offset_default_s": 0.0,
+        "clock_offset_plausible_range_ms": list(
+            CLOCK_OFFSET_PLAUSIBLE_RANGE_MS),
+    }
+
+    by_day = {}
+    if os.path.exists(VENUE_OFFSETS_TSV):
+        try:
+            table = pd.read_csv(VENUE_OFFSETS_TSV, sep="\t")
+            by_day = {str(d): float(o) for d, o
+                      in zip(table["day"], table["offset_s"])}
+            caveat["clock_offset_source"] = VENUE_OFFSETS_TSV
+        except Exception:                       # noqa: BLE001 - a caveat must
+            by_day = {}                         # never be able to fail a run
+
+    used = {d: by_day[d] for d in days if d in by_day}
+    caveat["clock_offset_s_by_day"] = used or None
+    if not used:
+        caveat["clock_offset_unknown_to_this_run"] = (
+            "No configured offset is recorded for the days in this run, so "
+            "the offset these results rest on is unknown. Read them as "
+            "assuming 0.0 s, with the 0-74 ms band as the sensitivity.")
+    return caveat
 
 
 def _fee_fields(schedule):
@@ -71,7 +123,14 @@ def _select(episodes, sample):
     return out
 
 
-def run(investigation_dir, quote, execn, sample, output, episodes):
+def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
+    """Replay one configuration. `inputs` is the data files this run read.
+
+    Every path in `inputs` is fingerprinted into the manifest, which is how a
+    run folder answers "which panel, which spot build, which fair export?"
+    later. Passing nothing leaves `manifest["inputs"]` empty and the run
+    unidentifiable against its data.
+    """
     resolved = provenance.resolve_slots(investigation_dir)
     modules = {slot: provenance.load_slot(path, slot)
                for slot, path in resolved.items()}
@@ -85,7 +144,8 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
     config = config_dict(quote, execn, sample, output, fee_schedule)
 
     run_dir = provenance.new_run_dir(investigation_dir, config)
-    provenance.write_manifest(run_dir, config, resolved, seeds=output.seeds)
+    provenance.write_manifest(run_dir, config, resolved, inputs=tuple(inputs),
+                              seeds=output.seeds)
 
     blocks = {
         "f": modules["f"].standardise,
@@ -138,6 +198,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
                 "No depth, no trade tape, no queue exists in this data. Any "
                 "maker number is conditional on the fill block and must be "
                 "reported as a range across fill optimism.",
+            **_clock_offset_caveat(sorted({ep.day for ep in selected})),
         },
     }
 

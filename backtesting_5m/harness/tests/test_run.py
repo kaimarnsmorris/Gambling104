@@ -38,12 +38,89 @@ def test_a_run_writes_a_manifest_and_a_ledger(tmp_path, episodes):
         assert os.path.exists(os.path.join(run_dir, name)), name
 
 
-def test_the_summary_carries_the_grid_bias_caveat(tmp_path, episodes):
+def test_the_summary_carries_every_standing_caveat(tmp_path, episodes):
+    """All three, not just the grid bias.
+
+    This test used to check the grid-bias key alone, which is how the
+    clock-offset caveat came to be written and never reach an output file.
+    """
     result = _run(tmp_path, episodes)
     summary = json.loads(
         open(os.path.join(result["run_dir"], "summary.json")).read())
-    assert "grid_bias_usd_per_market" in summary["caveats"]
-    assert summary["caveats"]["grid_bias_usd_per_market"] == pytest.approx(0.13)
+    caveats = summary["caveats"]
+    assert {"grid_bias_usd_per_market", "grid_bias_note",
+            "maker_fills_are_modelled",
+            "clock_offset_is_assumed_not_measured"} <= set(caveats)
+    assert caveats["grid_bias_usd_per_market"] == pytest.approx(0.13)
+
+
+def test_the_clock_offset_caveat_says_it_is_assumed_not_measured(tmp_path,
+                                                                 episodes):
+    """Spot-derived results must not ship without disclosing this.
+
+    The offset cannot be recovered from these two streams -- they carry
+    different events -- so it is configured, defaults to 0.0, and is bounded
+    only by this repo's own 0-74 ms same-book drift measurements.
+    """
+    result = _run(tmp_path, episodes)
+    caveats = json.loads(
+        open(os.path.join(result["run_dir"], "summary.json")).read())["caveats"]
+    note = caveats["clock_offset_is_assumed_not_measured"]
+    assert "ASSUMPTION" in note and "not a measurement" in note
+    assert caveats["clock_offset_default_s"] == pytest.approx(0.0)
+    assert caveats["clock_offset_plausible_range_ms"] == [0.0, 74.0]
+    # these synthetic days have no recorded offset, so the run must say so
+    assert caveats["clock_offset_s_by_day"] is None
+    assert "unknown" in caveats["clock_offset_unknown_to_this_run"]
+
+
+def test_the_recorded_offsets_are_reported_for_the_days_that_have_them(
+        tmp_path, episodes, monkeypatch):
+    from dataclasses import replace as dc_replace
+
+    from harness.core import run as run_module
+
+    tsv = tmp_path / "venue_vantage_offsets.tsv"
+    header = ["day", "offset_s", "n", "source"]
+    row = ["2026-08-14", "0.031", "100", "configured"]
+    tsv.write_text("\n".join(["\t".join(header),
+                              "\t".join(row), ""]))
+    monkeypatch.setattr(run_module, "VENUE_OFFSETS_TSV", str(tsv))
+
+    result = _run(tmp_path, [dc_replace(episodes[0], day="2026-08-14")])
+    caveats = result["summary"]["caveats"]
+    assert caveats["clock_offset_s_by_day"] == {
+        "2026-08-14": pytest.approx(0.031)}
+    assert "clock_offset_unknown_to_this_run" not in caveats
+
+
+def test_the_manifest_fingerprints_the_inputs_it_was_given(tmp_path, episodes):
+    """spec 7 wants the panel and spot build identities in the manifest.
+
+    run() never passed `inputs` to write_manifest, so `manifest["inputs"]` was
+    [] on every shipped run and no run folder could be matched to the data it
+    read.
+    """
+    panel = tmp_path / "panel.parquet"
+    panel.write_bytes(b"not really a parquet, but it has an identity")
+
+    result = _run(tmp_path, episodes, inputs=(str(panel),))
+    manifest = json.loads(
+        open(os.path.join(result["run_dir"], "manifest.json")).read())
+
+    assert len(manifest["inputs"]) == 1
+    got = manifest["inputs"][0]
+    assert got["present"] is True
+    assert len(got["sha256"]) == 64
+    assert got["path"] == str(panel)
+
+
+def test_the_manifest_records_an_input_that_is_missing(tmp_path, episodes):
+    result = _run(tmp_path, episodes,
+                  inputs=(str(tmp_path / "absent.parquet"),))
+    manifest = json.loads(
+        open(os.path.join(result["run_dir"], "manifest.json")).read())
+    assert manifest["inputs"][0]["present"] is False
 
 
 def test_max_markets_limits_the_sample(tmp_path, episodes):

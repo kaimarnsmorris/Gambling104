@@ -70,16 +70,23 @@ def _headline(result):
     return stats.headline(primary)
 
 
-def run_with_sweeps(investigation_dir, quote, execn, sample, output, episodes):
-    """The reporting entry point. `run()` is the single-arm primitive."""
-    base = run(investigation_dir, quote, execn, sample, output, episodes)
+def run_with_sweeps(investigation_dir, quote, execn, sample, output, episodes,
+                    inputs=()):
+    """The reporting entry point. `run()` is the single-arm primitive.
+
+    `inputs` is forwarded to every arm, so each arm's manifest identifies the
+    data it read, not just the base run's.
+    """
+    base = run(investigation_dir, quote, execn, sample, output, episodes,
+               inputs=inputs)
 
     latency_arms = []
     for ms in LATENCY_LADDER_MS:
         arm_latency = replace(execn.latency, place_ms=ms, cancel_ms=ms,
                               take_ms=ms)
         arm = run(investigation_dir, quote, replace(execn, latency=arm_latency),
-                  sample, replace(output, plots=False), episodes)
+                  sample, replace(output, plots=False), episodes,
+                  inputs=inputs)
         latency_arms.append({"latency_ms": ms, "headline": _headline(arm),
                              "run_dir": arm["run_dir"]})
 
@@ -87,7 +94,7 @@ def run_with_sweeps(investigation_dir, quote, execn, sample, output, episodes):
     for name, arm_spec in FILL_ARMS.items():
         arm_execn = _resolve_fill_arm(execn, arm_spec)
         arm = run(investigation_dir, quote, arm_execn, sample,
-                  replace(output, plots=False), episodes)
+                  replace(output, plots=False), episodes, inputs=inputs)
         fill_arms.append({"arm": name, "fill_params": arm_spec["fill_params"],
                           "cancel_ms": arm_execn.latency.cancel_ms,
                           "move_cancel_ms": arm_execn.latency.move_cancel_ms,

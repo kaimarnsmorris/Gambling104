@@ -4,6 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
+from harness import paths                              # noqa: E402
 from harness.build.episodes import load_episodes          # noqa: E402
 from harness.core.config import ExecConfig, Output, QuoteParams, Sample  # noqa: E402
 from harness.core.latency import LatencyModel             # noqa: E402
@@ -23,6 +24,9 @@ if __name__ == "__main__":
         sample=Sample(),
         output=Output(emit_ticks=True, seeds=(0, 1, 2)),
         episodes=episodes,
+        # fingerprinted into manifest.json, so the run folder
+        # still says which data it read
+        inputs=(paths.PANEL, paths.STRIKES),
     )
     print(result["run_dir"])
     print(result["summary"]["headline"])
