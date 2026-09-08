@@ -10,6 +10,15 @@ drawn from, so that row was not knowable until the bucket closed. Everything
 downstream indexes these arrays freely and therefore cannot reach forward,
 because no index contains a future value.
 
+That guarantee covers EVERY column, `s` included. The fair export is assumed
+to label its rows the way the panel does -- a value at `t_ms` derived from
+[t_ms, t_ms+100) -- so `s` is shifted onto the decision grid exactly like the
+book and the spot. The asymmetry decides it: shifting an already-causal export
+costs 100 ms of information, while failing to shift a panel-labelled one puts
+a future observation in the alpha column and voids every result built on it.
+A caller who has confirmed IN WRITING that the export is already decision
+aligned may pass `fair_is_causal=True` to opt out of the shift.
+
 Carrying the last quote is not the same as inventing one. A live trader knows
 the last book they saw; what they do not know is whether it is still valid.
 That is what `book_age_ms` is for, and why the engine refuses to trade against
@@ -93,8 +102,20 @@ def _grid(obs: pd.DataFrame, column: str):
 
 
 def build_episode(market_id, open_ts, day, strike, settle,
-                  obs, spot=None, s=None):
-    """Assemble one Episode. `obs` needs t_ms, bid, ask, mid, n_src."""
+                  obs, spot=None, s=None, fair_is_causal=False):
+    """Assemble one Episode. `obs` needs t_ms, bid, ask, mid, n_src.
+
+    `s` is a full-length array indexed by bucket, as the fair export labels it.
+    By DEFAULT it is shifted onto the decision grid like every other column,
+    because the export is assumed to use the panel's convention (a value at
+    t_ms drawn from [t_ms, t_ms+100), hence not knowable at t_ms).
+
+    `fair_is_causal=True` asserts the opposite -- that the export is already
+    decision aligned -- and uses `s` unshifted. Only set it once the export's
+    timestamp contract has been confirmed in writing by whoever produces it.
+    Setting it on a panel-labelled export manufactures lookahead in the alpha
+    column, which no downstream gate can detect.
+    """
     raw_bid, present = _grid(obs, "bid")
     raw_ask, _ = _grid(obs, "ask")
     raw_mid, _ = _grid(obs, "mid")
@@ -114,7 +135,14 @@ def build_episode(market_id, open_ts, day, strike, settle,
         spot_age = np.full(N_BUCKET, np.inf)
     has_spot = np.isfinite(spot_arr)
 
-    s_arr = np.full(N_BUCKET, np.nan) if s is None else np.asarray(s, "float64")
+    if s is None:
+        s_arr = np.full(N_BUCKET, np.nan)
+    else:
+        raw_s = np.asarray(s, dtype="float64")
+        if fair_is_causal:
+            s_arr = raw_s
+        else:
+            s_arr, _ = shift_to_decision_grid(raw_s, np.isfinite(raw_s))
 
     winner = None if settle is None else bool(settle >= strike)
     return Episode(

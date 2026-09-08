@@ -21,7 +21,14 @@ def settlement_map(strikes):
 
 
 def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
-                  fair_path=None, days=None, markets=None, max_markets=None):
+                  fair_path=None, days=None, markets=None, max_markets=None,
+                  fair_is_causal=False):
+    """Build Episodes from the panel, the strikes and (optionally) spot/fair.
+
+    `fair_is_causal` is forwarded to `build_episode`: leave it False unless the
+    fair export's timestamp contract has been confirmed in writing to be
+    decision aligned. See harness/core/episode.py for why the default shifts.
+    """
     panel_path = panel_path or paths.PANEL
     strikes_path = strikes_path or paths.STRIKES
 
@@ -70,7 +77,8 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
             day=obs["day"].iloc[0],
             strike=strike_by_id[market_id],
             settle=settle_by_open.get(int(open_ts)),
-            obs=obs, spot=ep_spot, s=ep_s))
+            obs=obs, spot=ep_spot, s=ep_s,
+            fair_is_causal=fair_is_causal))
 
         if max_markets is not None and len(episodes) >= max_markets:
             break

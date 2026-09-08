@@ -70,6 +70,49 @@ def test_no_future_leak_property():
             err_msg=f"bucket {k} leaked backwards")
 
 
+def test_the_fair_column_obeys_the_same_no_future_leak_property(obs_sparse):
+    """`s` is the alpha column, so it needs the property `bid` has.
+
+    The export labels a value at t_ms with the bucket it was drawn from, the
+    same convention the panel uses, so an unshifted `s` would put a future
+    observation at the decision index that acts on it -- lookahead in exactly
+    the column a strategy is built from.
+    """
+    rng = np.random.default_rng(3)
+    values = 100_000.0 + rng.random(N_BUCKET) * 100.0
+
+    def fair_of(arr):
+        return build_episode("m", 1786665600, "2026-08-14", 100_000.0,
+                             100_100.0, obs_sparse, None, arr).s
+
+    base = fair_of(values)
+    for k in (0, 1, 37, 1500, N_BUCKET - 1):
+        bumped = values.copy()
+        bumped[k] += 500.0
+        after = fair_of(bumped)
+        np.testing.assert_array_equal(
+            np.nan_to_num(base[: k + 1], nan=-1.0),
+            np.nan_to_num(after[: k + 1], nan=-1.0),
+            err_msg=f"fair bucket {k} leaked backwards")
+
+
+def test_the_fair_column_is_shifted_by_one_bucket_by_default(obs_sparse):
+    values = np.arange(N_BUCKET, dtype="float64")
+    ep = build_episode("m", 1786665600, "2026-08-14", 100_000.0, 100_100.0,
+                       obs_sparse, None, values)
+    assert np.isnan(ep.s[0]), "bucket 0 leaked into decision index 0"
+    assert ep.s[1] == pytest.approx(0.0)
+    assert ep.s[2999] == pytest.approx(2998.0)
+
+
+def test_fair_is_causal_opts_out_of_the_shift(obs_sparse):
+    """Only legitimate once the export's timestamp contract is confirmed."""
+    values = np.arange(N_BUCKET, dtype="float64")
+    ep = build_episode("m", 1786665600, "2026-08-14", 100_000.0, 100_100.0,
+                       obs_sparse, None, values, fair_is_causal=True)
+    np.testing.assert_array_equal(ep.s, values)
+
+
 def test_settlement_is_absent_when_no_successor_exists(obs_sparse):
     ep = build_episode("m", 1786665600, "2026-08-14", 100_000.0, None,
                        obs_sparse, None, None)
