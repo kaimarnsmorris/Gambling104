@@ -24,7 +24,7 @@ def episodes(flat_episode):
 
 def _run(tmp_path, episodes, **kw):
     kw.setdefault("quote", QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0))
-    kw.setdefault("execn", ExecConfig(mode="taker"))
+    kw.setdefault("execn", ExecConfig())
     kw.setdefault("sample", Sample())
     kw.setdefault("output", Output(plots=False))
     return run(str(tmp_path), episodes=episodes, **kw)
@@ -165,8 +165,7 @@ def test_a_fee_schedule_on_the_config_is_honoured(tmp_path, episodes):
     from harness.blocks.defaults.fees import FeeSchedule
 
     result = _run(tmp_path, episodes,
-                  execn=ExecConfig(mode="taker",
-                                   fees=FeeSchedule(base_fee_rate=0.0)))
+                  execn=ExecConfig(fees=FeeSchedule(base_fee_rate=0.0)))
     assert len(result["ledger"]), "nothing traded, so nothing is proven"
     assert (result["ledger"]["fee_usd"] == 0.0).all()
 
@@ -178,9 +177,9 @@ def test_configs_differing_only_in_fill_params_hash_differently(tmp_path,
     byte-identical config blocks -- you could not tell which arm a folder was.
     """
     a = _run(tmp_path, episodes,
-             execn=ExecConfig(mode="taker", fill_params={"penetration": 0.0}))
+             execn=ExecConfig(fill_params={"penetration": 0.0}))
     b = _run(tmp_path, episodes,
-             execn=ExecConfig(mode="taker", fill_params={"penetration": 0.01}))
+             execn=ExecConfig(fill_params={"penetration": 0.01}))
     assert a["run_dir"].split("__")[-1] != b["run_dir"].split("__")[-1]
 
 

@@ -1,7 +1,7 @@
 """Resolve blocks, select a sample, replay it, score it, write it down."""
 import json
 import os
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 
 import pandas as pd
 
@@ -92,7 +92,6 @@ def config_dict(quote, execn, sample, output, fee_schedule):
         "quote": asdict(quote),
         "sample": asdict(sample),
         "output": asdict(output),
-        "mode": execn.mode,
         "latency": asdict(execn.latency),
         "max_book_age_ms": execn.max_book_age_ms,
         "requote_every": execn.requote_every,
@@ -140,6 +139,9 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
     # override the schedule the way it overrides any other slot.
     fee_schedule = (execn.fees if execn.fees is not None
                     else modules["fees"].FeeSchedule())
+    # Policy prices against fees, so it must see the SAME schedule the
+    # ledger charges -- including one that came from an overridden block.
+    execn = replace(execn, fees=fee_schedule)
 
     config = config_dict(quote, execn, sample, output, fee_schedule)
 

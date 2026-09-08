@@ -1,8 +1,12 @@
 """The full plot set for the normal-QQ model evaluation.
 
 Reads the run folders recorded in `last_run_manifest.json` (written by
-`run.py`) and writes every figure as a PNG into the maker headline run
-folder, which is treated as the report's home directory.
+`run.py`) and writes every figure as a PNG into the headline run folder,
+which is treated as the report's home directory.
+
+The execution policy is unified -- one run makes and takes -- so maker and
+taker are separated by the ledger's `liquidity` column, not by running the
+harness twice.
 
     1. cumulative net PnL over the ordered market sequence, day boundaries
        marked
@@ -24,6 +28,7 @@ import pandas as pd                       # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
+from harness.blocks.defaults.fees import Liquidity          # noqa: E402
 from harness.io import read_parquet                        # noqa: E402
 from harness.core.provenance import load_slot, resolve_slots  # noqa: E402
 from harness.build.episodes import load_episodes           # noqa: E402
@@ -224,18 +229,15 @@ def main():
     with open(os.path.join(HERE, "last_run_manifest.json")) as fh:
         manifest = json.load(fh)
 
-    maker = _load_run(manifest["run_dirs"]["maker"])
-    taker = _load_run(manifest["run_dirs"]["taker"])
+    headline = _load_run(manifest["run_dirs"]["headline"])
     detail = _load_run(manifest["run_dirs"]["detail"])
 
-    out_dir = maker["run_dir"]
+    out_dir = headline["run_dir"]
     print("plots ->", out_dir)
 
-    plot_cumulative_pnl(maker["markets"], os.path.join(out_dir, "cum_pnl_days.png"),
-                        "Cumulative net PnL, maker mode")
-    plot_cumulative_pnl(taker["markets"],
-                        os.path.join(out_dir, "cum_pnl_days_taker.png"),
-                        "Cumulative net PnL, taker mode")
+    plot_cumulative_pnl(headline["markets"],
+                        os.path.join(out_dir, "cum_pnl_days.png"),
+                        "Cumulative net PnL, unified making and taking")
 
     chosen = manifest["chosen_detail_markets"]
     for i, mkt in enumerate(chosen):
@@ -244,11 +246,11 @@ def main():
         if not ok:
             print(f"WARNING: no ticks for chosen market {mkt}")
 
-    plot_markout(maker["ledger"], taker["ledger"],
+    combined_ledger = headline["ledger"]
+    is_maker = combined_ledger["liquidity"] == int(Liquidity.MAKER)
+    plot_markout(combined_ledger[is_maker], combined_ledger[~is_maker],
                 os.path.join(out_dir, "markout_distribution.png"))
 
-    combined_ledger = pd.concat([maker["ledger"], taker["ledger"]],
-                                ignore_index=True)
     plot_by_tte_bucket(combined_ledger, os.path.join(out_dir, "pnl_fills_by_tte.png"))
 
     # winner_up per market, from the same 6-day spot sample used for the runs

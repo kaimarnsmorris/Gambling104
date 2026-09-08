@@ -25,14 +25,14 @@ def _run(ep, params, execn, emit_ticks=False):
 
 def test_a_policy_that_never_quotes_trades_nothing(flat_episode):
     out = _run(flat_episode, QuoteParams(e_p=0.9, shares=10.0),
-               ExecConfig(mode="maker"))
+               ExecConfig())
     assert out["n_fills"] == 0
     assert out["pnl_net"] == pytest.approx(0.0)
 
 
 def test_a_flat_book_and_a_flat_fair_produce_no_taker_trades(flat_episode):
     out = _run(flat_episode, QuoteParams(e_p=0.0, shares=10.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     assert out["n_fills"] == 0
 
 
@@ -40,7 +40,7 @@ def test_a_taker_that_lifts_a_cheap_book_pays_the_book_price(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     assert out["n_fills"] == 1
     fills = out["fills"]
     assert fills[0]["price"] == pytest.approx(0.20)
@@ -52,7 +52,7 @@ def test_settlement_pays_one_for_a_winning_long(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     assert out["pnl_gross"] == pytest.approx(8.0)
 
 
@@ -60,7 +60,7 @@ def test_fees_are_subtracted_from_gross(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     expected = 10.0 * 0.07 * 0.20 * 0.80 * (1.0 - 0.0833)
     assert out["fees"] == pytest.approx(expected)
     assert out["pnl_net"] == pytest.approx(out["pnl_gross"] - expected)
@@ -71,7 +71,7 @@ def test_a_maker_fill_is_paid_a_rebate(flat_episode):
     ep = flat_episode
     ep.ask[500:] = 0.30
     out = _run(ep, QuoteParams(e_p=0.15, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="maker"))
+               ExecConfig())
     assert out["n_fills"] >= 1
     assert out["fees"] < 0.0
     assert out["pnl_net"] > out["pnl_gross"]
@@ -81,7 +81,7 @@ def test_the_position_cap_is_never_exceeded(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=30.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     assert out["max_abs_q"] <= 30.0
 
 
@@ -97,7 +97,7 @@ def test_the_cap_holds_when_requoting_faster_than_the_taker_lock(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=1.0, max_pos=1.0),
-               ExecConfig(mode="taker", requote_every=1))
+               ExecConfig(requote_every=1))
     assert out["max_abs_q"] <= 1.0, "position cap breached by in-flight orders"
 
 
@@ -106,8 +106,7 @@ def test_place_latency_delays_the_first_possible_fill(flat_episode):
     ep = flat_episode
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="taker",
-                          latency=LatencyModel(take_ms=1000.0)))
+               ExecConfig(latency=LatencyModel(take_ms=1000.0)))
     assert out["fills"][0]["t_ms"] >= 1000
 
 
@@ -116,7 +115,7 @@ def test_an_unsettled_market_reports_no_pnl(flat_episode):
     ep = replace(flat_episode, winner_up=None, settle=None)
     ep.ask[:] = 0.20
     out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
-               ExecConfig(mode="taker"))
+               ExecConfig())
     assert out["settled"] is False
     assert np.isnan(out["pnl_net"])
 
@@ -141,9 +140,52 @@ def test_a_model_outage_pulls_the_resting_orders(flat_episode):
 
     out = run_episode(ep, blocks, QuoteParams(e_p=0.15, shares=10.0,
                                               max_pos=10.0),
-                      ExecConfig(mode="maker"), seed=0)
+                      ExecConfig(), seed=0)
     assert out["n_fills"] == 0, (
         "a resting order survived the model outage and filled into the crash")
+
+
+def test_one_run_both_makes_and_takes(flat_episode):
+    """The unified policy, end to end. There is no arm to switch between.
+
+    The book comes to our resting bid at index 500 (a maker fill at our own
+    price), and only at 1000 does it fall far enough through the fee-adjusted
+    threshold to be worth lifting. Both happen in one episode, with the cap
+    still holding.
+    """
+    ep = flat_episode
+    ep.ask[500:] = 0.34       # touches the resting bid, but inside the fee
+    ep.ask[1000:] = 0.20      # now genuinely worth crossing for
+
+    out = _run(ep, QuoteParams(e_p=0.15, shares=10.0, max_pos=50.0),
+               ExecConfig())
+    kinds = {int(fl["liquidity"]) for fl in out["fills"]}
+    assert kinds == {int(fees.Liquidity.MAKER), int(fees.Liquidity.TAKER)}
+    assert out["max_abs_q"] <= 50.0
+
+
+def test_a_one_cent_edge_is_not_crossed_into_a_larger_fee(flat_episode):
+    """The whole point of putting fees in the threshold.
+
+    eff_bid is 0.51 against an ask of 0.50: a 1 c edge, and the taker fee at
+    0.50 is 1.6 c. The old policy crossed this every requote and lost by
+    construction.
+    """
+    ep = flat_episode
+    ep.ask[:] = 0.50
+    params = QuoteParams(e_p=-0.01, shares=10.0, max_pos=10.0)
+
+    charged = _run(ep, params, ExecConfig(requote_every=1))
+    assert charged["n_fills"] == 0, "crossed a 1 c edge into a 1.6 c fee"
+
+    # the same book, the same forecast, with the fee waived: now it crosses,
+    # which is what proves the fee -- and nothing else -- was the brake
+    waived = _run(ep, params,
+                  ExecConfig(requote_every=1,
+                             fees=fees.FeeSchedule(base_fee_rate=0.0)))
+    assert waived["n_fills"] >= 1
+    assert all(fl["liquidity"] == int(fees.Liquidity.TAKER)
+               for fl in waived["fills"])
 
 
 def test_tick_output_is_off_by_default_and_complete_when_on(flat_episode):
@@ -158,7 +200,7 @@ def test_results_are_reproducible_across_runs(flat_episode):
     """Jitter is seeded per episode, so two identical runs agree exactly."""
     ep = flat_episode
     ep.ask[500:] = 0.30
-    execn = ExecConfig(mode="maker", latency=LatencyModel(jitter_frac=0.4))
+    execn = ExecConfig(latency=LatencyModel(jitter_frac=0.4))
     params = QuoteParams(e_p=0.15, shares=10.0, max_pos=20.0)
     a = _run(ep, params, execn)
     b = _run(ep, params, execn)

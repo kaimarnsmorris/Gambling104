@@ -17,7 +17,7 @@ if __name__ == "__main__":
     result = run(
         HERE,
         quote=QuoteParams(e_p=0.02, rpl_p=0.001, max_pos=50.0, shares=10.0),
-        execn=ExecConfig(mode="maker", latency=LatencyModel()),
+        execn=ExecConfig(latency=LatencyModel()),
         sample=Sample(),
         output=Output(seeds=(0, 1, 2)),
         episodes=episodes,

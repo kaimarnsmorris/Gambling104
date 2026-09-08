@@ -30,11 +30,20 @@ class QuoteParams:
 
 @dataclass(frozen=True)
 class ExecConfig:
-    mode: str = "maker"                 # "maker" | "taker" | "both"
+    """Execution knobs. There is no mode: the policy is unified.
+
+    Making and taking are simultaneous, not alternatives -- we rest on both
+    sides and cross whenever the book is through the fee-adjusted
+    threshold. Which is why `fees` is a policy input here and not only a
+    PnL input: the thresholds themselves are fee-adjusted.
+    """
+
     latency: LatencyModel = field(default_factory=LatencyModel)
     #: None means "use whatever the resolved `fees` block supplies", which is
     #: how an investigation overrides the schedule by dropping in a fees.py.
-    #: A schedule set here is a run parameter and wins over the block.
+    #: A schedule set here is a run parameter and wins over the block. `run`
+    #: resolves it and stamps it back onto the config it replays with, so
+    #: the policy prices against the same schedule the ledger charges.
     fees: FeeSchedule | None = None
     max_book_age_ms: float = 1000.0
     requote_every: int = 10             # decision indices between requotes

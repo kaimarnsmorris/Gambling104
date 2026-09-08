@@ -1,6 +1,11 @@
-"""Evaluate the normal-QQ fair-value model: headline maker, headline taker,
-the mandatory sweeps on a subsample, and a small tick-emitting run over four
-markets chosen for the per-market detail plots.
+"""Evaluate the normal-QQ fair-value model: one headline run, the mandatory
+sweeps on a subsample, and a small tick-emitting run over four markets chosen
+for the per-market detail plots.
+
+There is no longer a maker arm and a taker arm to compare. The execution
+policy is unified -- it rests on both sides and crosses when the book is
+through the fee-adjusted threshold, in the same pass -- so a single headline
+run contains both kinds of fill and `liquidity` on the ledger separates them.
 
 Quote parameters (e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10) are NOT
 optimised. They are a modest, round-numbered choice, stated here and in the
@@ -43,19 +48,18 @@ def main():
     sample = Sample(require_spot=True)
     results = {}
 
-    for mode in ("maker", "taker"):
-        t1 = time.time()
-        res = run(
-            HERE, quote=QUOTE,
-            execn=ExecConfig(mode=mode, latency=LatencyModel()),
-            sample=sample,
-            output=Output(seeds=(0, 1, 2), plots=True),
-            episodes=episodes,
-        )
-        print(f"headline {mode}: {time.time()-t1:.1f}s -> {res['run_dir']}")
-        print(res["summary"]["headline"])
-        print("gates passed:", res["summary"]["gates"]["passed"])
-        results[mode] = res
+    t1 = time.time()
+    headline = run(
+        HERE, quote=QUOTE,
+        execn=ExecConfig(latency=LatencyModel()),
+        sample=sample,
+        output=Output(seeds=(0, 1, 2), plots=True),
+        episodes=episodes,
+    )
+    print(f"headline: {time.time()-t1:.1f}s -> {headline['run_dir']}")
+    print(headline["summary"]["headline"])
+    print("gates passed:", headline["summary"]["gates"]["passed"])
+    results["headline"] = headline
 
     # -- sweeps, on a subsample, one seed, clearly labelled -----------------
     rng = np.random.default_rng(SWEEP_SEED_RNG)
@@ -68,7 +72,7 @@ def main():
     t2 = time.time()
     sweep_res = run_with_sweeps(
         HERE, quote=QUOTE,
-        execn=ExecConfig(mode="maker", latency=LatencyModel()),
+        execn=ExecConfig(latency=LatencyModel()),
         sample=sample,
         output=Output(seeds=(0,), plots=False),
         episodes=sweep_episodes,
@@ -77,8 +81,8 @@ def main():
     results["sweeps"] = sweep_res
 
     # -- pick 4 markets that actually traded, for the per-market detail -----
-    maker_markets = results["maker"]["markets"]
-    primary = maker_markets[maker_markets["seed"] == 0]
+    headline_markets = headline["markets"]
+    primary = headline_markets[headline_markets["seed"] == 0]
     traded = primary[primary["n_fills"] > 0]["market_id"].tolist()
     pick_rng = np.random.default_rng(20260909)
     n_pick = min(4, len(traded))
@@ -90,7 +94,7 @@ def main():
     t3 = time.time()
     detail_res = run(
         HERE, quote=QUOTE,
-        execn=ExecConfig(mode="maker", latency=LatencyModel()),
+        execn=ExecConfig(latency=LatencyModel()),
         sample=Sample(require_spot=True, markets=tuple(chosen)),
         output=Output(emit_ticks=True, tick_markets=tuple(chosen),
                       seeds=(0,), plots=False),
