@@ -1,0 +1,97 @@
+{
+  "version": "fv-1.0.0",
+  "generated_at": "2026-09-08T18:27:00Z",
+  "generator": "tools/write_model_json.py",
+  "source": "btc_volatility_clock_chainlink, report_final.html; vendored 2026-09-09, not refitted here",
+  "window": {
+    "backtest_t0": 1786665600,
+    "backtest_t1": 1788220799,
+    "select_t1": 1787702399,
+    "holdout_t0": 1787702400,
+    "burn_days": 14,
+    "note": "2026-08-14 .. 2026-08-31. The panel runs to 09-08 but the perp/spot 1 s inputs end 08-31, so 09-01 onward is unpriceable. See spec section 1.1."
+  },
+  "base": {
+    "params": "tables/params_v2_1_0.json",
+    "params_version": "2.1.0",
+    "params_sha256": "2c88e297e4094806065714aa5d2fee2ab9ba34c2dc7519fbb15e06f996835939"
+  },
+  "tables": {
+    "print_model": {
+      "file": "tables/print_model.json",
+      "sha256": "83558441bf1116b4666a022f3a17fa5ef407f07a4870454ce1e5f72c0657efae",
+      "fitted_by": "scripts/10_print_model.py",
+      "report": "report_final.html section 4",
+      "contents": "filter constants, basis tracker, eps model, reconstruction"
+    },
+    "kernels": {
+      "file": "tables/kernels.json",
+      "sha256": "ac34c6078a88edfe85514d0351ee7053db17100fc552882dc4695f5d3e683a3c",
+      "fitted_by": "scripts/11_kernels.py",
+      "report": "report_final.html section 6",
+      "contents": "activity-conditioned return autocorrelation, input variance ratio"
+    },
+    "alpha": {
+      "file": "tables/alpha.json",
+      "sha256": "9fc3f54592f79ae4130173ef9ea47627e891cc1f305caab2b5ade7aa45ca24c8",
+      "fitted_by": "scripts/12_alpha.py",
+      "report": "report_final.html section 10",
+      "contents": "beta(dT) in bp with the quote-age interaction"
+    },
+    "tails": {
+      "file": "tables/tails.json",
+      "sha256": "2d73afd9e49535d964dbeefa2b746cf6a07c61a0d2a39ab67137b2230ea44f79",
+      "fitted_by": "scripts/13_eval.py",
+      "report": "report_final.html section 11",
+      "contents": "settlement tail (nu, mu, sigma) by log business time, per kind"
+    },
+    "xi_cap": {
+      "file": "tables/xi_cap.json",
+      "sha256": "8bd1b7de7ccb6f08e83a838ab8449d32502944fdeb80b580aeba871f844ef282",
+      "fitted_by": "scripts/22_fit_xi_cap.py",
+      "report": "report_final.html section 11.2",
+      "contents": "short-business-time forward-curve cap; OFF by default"
+    },
+    "filter_by_w": {
+      "file": "tables/filter_by_w.json",
+      "sha256": "57a5c9579ab94666c58ee7c809164d0a76a190af38a044d1dbc91b6cc28dfffe",
+      "fitted_by": "tools/extract_filter_by_w.py",
+      "report": "spec ruling R11",
+      "contents": "best (tau, delta, p_late) per blend weight, coarse grid"
+    }
+  },
+  "defaults": {
+    "eps_fit": "train",
+    "input_mode": "blend"
+  },
+  "overrides": {
+    "version": "ov-1.0.0",
+    "source": "consolidation brief 2026-09-09",
+    "kappa_vol": 0.0,
+    "kappa_vol_short": 0.0,
+    "shrink_w": 0.0,
+    "shrink_decay_s": 60.0,
+    "rho_kernel": "conditional",
+    "eps_scale": 1.0,
+    "eps_condition": true,
+    "basis_tracker": "main",
+    "information_set": "full",
+    "reconstruct_in_transit": true,
+    "kappa_tail": 0.0,
+    "tail_scale": 1.0,
+    "tail_family": "t",
+    "alpha_scale": 1.0,
+    "alpha_scale_age": 1.0,
+    "alpha_cap_sd": null,
+    "w_spot": null,
+    "xi_cap_c": null,
+    "temperature": 1.0
+  },
+  "data": {
+    "note": "Large 1 s inputs are not vendored. Override the root with the FV_SOURCE_ROOT environment variable.",
+    "source_root": "C:\\Users\\kaima\\OneDrive\\Documents\\GitHub\\autoresearch\\btc_volatility_clock_chainlink",
+    "chainlink_1s": "data/chainlink/chainlink_1s.parquet",
+    "perp_1s": "../btc_volatility_clock/output/data/btcusdt_1s.parquet",
+    "spot_1s_glob": "cache/spot_1s_*.parquet"
+  }
+}
