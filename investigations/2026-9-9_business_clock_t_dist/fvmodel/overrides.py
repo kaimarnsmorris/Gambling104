@@ -160,3 +160,53 @@ def apply_overrides(model, ov: "Overrides"):
         m.xi_cap_c = 0.0
         m.xi_cap_i = None
     return m
+
+
+# ===================================================================== per tick
+def xi_adjust(ov: "Overrides", xi, dT_business_s, xi_bar=None):
+    """The vol overrides, applied to the forward curve.
+
+    `xi` is the per-second forward variance over the exact block, `dT_business_s` the
+    business age in seconds of each of those seconds measured from the quote origin
+    (spec R7: business days times 86400), broadcastable against `xi`.
+
+    Order matters and is the brief's: kappa_vol and kappa_vol_short move log xi, then
+    the shrink pulls the MOVED curve toward the seasonal-unconditional level `xi_bar`
+    (spec R6). Applying the shrink first would let a vol override escape it.
+
+    Returns `xi` itself when nothing is on, so the default path allocates nothing and
+    is bit-identical.
+    """
+    if ov.kappa_vol == 0.0 and ov.kappa_vol_short == 0.0 and ov.shrink_w == 0.0:
+        return xi
+    logxi = np.log(np.maximum(np.asarray(xi, dtype=np.float64), 1e-300))
+    D = np.maximum(np.asarray(dT_business_s, dtype=np.float64), 1e-12)
+    if ov.kappa_vol != 0.0:
+        logxi = logxi + 2.0 * ov.kappa_vol
+    if ov.kappa_vol_short != 0.0:
+        logxi = logxi + 2.0 * ov.kappa_vol_short * np.minimum(1.0, 60.0 / D)
+    if ov.shrink_w != 0.0:
+        if xi_bar is None:
+            raise ValueError("shrink_w needs the unconditional curve xi_bar")
+        w = ov.shrink_w * np.exp(-D / max(ov.shrink_decay_s, 1e-9))
+        logbar = np.log(np.maximum(np.asarray(xi_bar, dtype=np.float64), 1e-300))
+        logxi = (1.0 - w) * logxi + w * logbar
+    return np.exp(logxi)
+
+
+def cap_m_Y(ov: "Overrides", m_Y, var_y):
+    """Clip the location term at `alpha_cap_sd` settlement standard deviations."""
+    if ov.alpha_cap_sd is None:
+        return m_Y
+    lim = float(ov.alpha_cap_sd) * np.sqrt(np.maximum(var_y, 0.0))
+    return np.clip(m_Y, -lim, lim)
+
+
+def quoted_prob(ov: "Overrides", p):
+    """The quoting-layer temperature. Never touches `p_model`."""
+    if ov.temperature == 1.0:
+        return p
+    q = np.clip(np.asarray(p, dtype=np.float64), 1e-12, 1 - 1e-12)
+    lg = np.log(q / (1.0 - q)) / float(ov.temperature)
+    out = 1.0 / (1.0 + np.exp(-lg))
+    return float(out) if np.ndim(p) == 0 else out

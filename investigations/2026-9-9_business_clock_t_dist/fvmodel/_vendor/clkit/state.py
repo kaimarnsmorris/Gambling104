@@ -32,6 +32,7 @@ class BatchV2:
     def __init__(self, params: dict, ts0: int, n: int, close: np.ndarray,
                  valid: np.ndarray, n_trades: np.ndarray):
         self.p = params
+        self.params = params
         self.model = Model(params)
         self.ts0 = int(ts0)
         self.n = int(n)

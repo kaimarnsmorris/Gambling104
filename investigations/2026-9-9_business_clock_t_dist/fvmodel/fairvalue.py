@@ -42,7 +42,8 @@ import numpy as np
 
 from .alpha import AlphaModel
 from .chainlink import EpsModel, FilterParams, PrintFilter, eps_conditional
-from .curve import dT_at, forward_block
+from .curve import dT_at, forward_block, unconditional_xi
+from .overrides import Overrides, cap_m_Y, quoted_prob, xi_adjust
 from .tails import SettlementTail
 from .variance import PAD, block_length, settlement_variance
 from .weights import settlement_weights
@@ -144,6 +145,8 @@ class FairValue:
     basis: float = float("nan")
     basis_alt: float = float("nan")
     switches: str = "full"
+    p_model: float = float("nan")
+    p_quoted: float = float("nan")
 
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
@@ -219,17 +222,24 @@ def fair_value(state, market: Market, model: FairValueModel,
     d_bar = d_sum / s.n_components / omega
 
     # ---- the variance of the return part ------------------------------------
-    logv = np.log(np.maximum(state.v2.v, 1e-300))
-    kappa_vol = model.ov.kappa_vol if model.ov else 0.0
-    if kappa_vol:
-        logv = logv + 2.0 * kappa_vol
-        v_state = state.v2.copy()
-        v_state.v = np.exp(logv)
-    else:
-        v_state = state.v2
+    # The register bank is NOT touched: kappa_vol moved to the forward curve
+    # (brief section 4.2), which is what makes the bank variant-invariant and so
+    # cacheable across every variant run. See the spec, section 4.3.
+    v_state = state.v2
     m_blk = block_length(kind if sw.composed_weights else "perp_twap", n, Lw, PAD)
     iv_head, xi = forward_block(model.v2, v_state, t, n, m_blk,
                                 cap_c=model.xi_cap_c, cap_i=model.xi_cap_i)
+    ov = model.ov or Overrides()
+    if xi.size:
+        u_blk = np.arange(n - xi.size + 1, n + 1, dtype=np.int64)
+        dT_blk = dT_at(model.v2, v_state, t, u_blk) * 86400.0     # business seconds
+        xi_bar = (unconditional_xi(model.v2, dT_blk / 86400.0)
+                  if ov.shrink_w != 0.0 else None)
+        xi = xi_adjust(ov, xi, dT_blk, xi_bar)
+        # the head integral carries the same uniform scaling; the short-end and
+        # shrink knobs are defined on the block, where the settlement weights live
+        if ov.kappa_vol != 0.0:
+            iv_head = iv_head * np.exp(2.0 * ov.kappa_vol)
     rho = model.rho_for(state.v2.act, sw.rho_mode)
     ratio = model.input_var_ratio if (kind == "chainlink_twap60" and sw.use_blend) else 1.0
     var_ret = float(settlement_variance(np.array([iv_head]), xi[None, :] * ratio,
@@ -265,6 +275,7 @@ def fair_value(state, market: Market, model: FairValueModel,
         m_Y = float(model.alpha.m_Y(market.book_snapshot.get("imbalance", 0.0),
                                     W[:na], dTc[None, :],
                                     market.book_snapshot.get("px_age_s")))
+    m_Y = cap_m_Y(ov, m_Y, var_y)
 
     # ---- the strike ----------------------------------------------------------
     if kind == "perp_single":
@@ -282,9 +293,10 @@ def fair_value(state, market: Market, model: FairValueModel,
     z = float(np.log(max(D, 1e-12)))
     tail = model.tail_for(kind)
     nu, mu, sg = tail.params(z)
-    p_up = float(tail.prob_up(y_star, var_y, z))
+    p_model = float(tail.prob_up(y_star, var_y, z))
+    p_quoted = float(quoted_prob(ov, p_model))
 
-    return FairValue(p_up=p_up, var_y=var_y, y_star=y_star, sd_y=float(np.sqrt(var_y)),
+    return FairValue(p_up=p_model, var_y=var_y, y_star=y_star, sd_y=float(np.sqrt(var_y)),
                      n_remaining=n, n_components=s.n_components, n_known=n_known,
                      n_in_transit=n_transit, omega=omega, known_value=A_R,
                      carry=d_bar, m_Y=m_Y, eps_bar=eps_bar, var_eps=var_eps,
@@ -292,7 +304,7 @@ def fair_value(state, market: Market, model: FairValueModel,
                      tail=(float(nu), float(mu), float(sg)), p_ref=p_ref,
                      basis=float(getattr(state.filt, "b", float("nan"))),
                      basis_alt=float(getattr(state.filt, "b_alt", float("nan"))),
-                     switches=sw.label())
+                     switches=sw.label(), p_model=p_model, p_quoted=p_quoted)
 
 
 # ============================================================== the composite state

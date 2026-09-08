@@ -218,6 +218,23 @@ class BatchClock:
         return iv_head, xi
 
 
+def unconditional_xi(model, dT: np.ndarray) -> np.ndarray:
+    """The forward curve the unconditional register bank would give, at ages `dT`.
+
+    This is the shrink target (spec ruling R6): the seasonal level with no volatility
+    news in it at all, which is what `registers.initial_value` encodes. `dT` is in
+    business days, matching `dT_at`, and the returned curve is per-second increments
+    aligned with `forward_block`'s block.
+    """
+    v0 = np.asarray(model.params["registers"]["initial_value"], dtype=np.float64)
+    g = _iv_from_cum(model.forward, np.asarray(dT, dtype=np.float64),
+                     np.log(np.maximum(v0, 1e-300)))
+    g = np.atleast_2d(g)
+    inc = np.maximum(np.diff(np.concatenate(
+        [np.zeros((g.shape[0], 1)), g], axis=1), axis=1), 0.0)
+    return inc if np.ndim(dT) > 1 else inc[0]
+
+
 # ======================================================================== the harness
 def check_tail(model, state, t_now: int, n: int, m: int, tol: float = 1e-7) -> float:
     """`forward_block` must agree with the shipped full curve on the same seconds."""

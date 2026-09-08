@@ -24,7 +24,8 @@ import numpy as np
 
 from .base import CL_T0, PERP_T0, load_grid, load_perp
 from .chainlink import blend_logx, ewma, shift_frac, basis_series, eps_conditional
-from .curve import BatchClock
+from .curve import BatchClock, unconditional_xi
+from .overrides import Overrides, cap_m_Y, quoted_prob, xi_adjust
 from .variance import PAD, block_length, settlement_variance
 from .weights import settlement_weights
 
@@ -288,14 +289,20 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
             d_bar = np.zeros(it.size)
 
     # ---- variance -------------------------------------------------------------
-    logv = win.logv_at(it_q)
-    kappa_vol = model.ov.kappa_vol if model.ov else 0.0
-    if kappa_vol:
-        logv = logv + 2.0 * kappa_vol
+    logv = win.logv_at(it_q)                     # variant-invariant: see spec 4.3
     m_blk = block_length(kind if sw.composed_weights else "perp_twap", n_q, Lw, PAD)
     iv_head, xi = win.clock.forward_block(logv, it_q, n_q, m_blk,
                                           cap_c=model.xi_cap_c,
                                           cap_i=model.xi_cap_i)
+    ov = model.ov or Overrides()
+    if xi.size:
+        u_blk = np.arange(n_q - xi.shape[1] + 1, n_q + 1, dtype=np.int64)
+        dT_blk = win.clock.dT_at(it_q, u_blk) * 86400.0
+        xi_bar = (unconditional_xi(win.bv, dT_blk / 86400.0)
+                  if ov.shrink_w != 0.0 else None)
+        xi = xi_adjust(ov, xi, dT_blk, xi_bar)
+        if ov.kappa_vol != 0.0:
+            iv_head = iv_head * np.exp(2.0 * ov.kappa_vol)
     ratio = model.input_var_ratio if (kind == "chainlink_twap60" and sw.use_blend) else 1.0
     act = win.bv.act[it_q]
     var_ret = np.empty(it.size)
@@ -344,6 +351,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
         I = np.nan_to_num(book["imbalance"][it])
         age = book["px_age_s"][it]
         m_Y = model.alpha.m_Y(I, W[:na], dTc, np.where(np.isfinite(age), age, np.nan))
+    m_Y = cap_m_Y(ov, m_Y, var_y)
 
     # ---- the strike and the realised residual ---------------------------------
     if kind == "perp_single":
@@ -365,6 +373,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
     z = np.log(np.maximum(D, 1e-12))
     tail = model.tail_for(kind)
     p_up = tail.prob_up(y_star, var_y, z)
+    p_quoted = quoted_prob(ov, p_up)
     up = settle > strike
 
     ok = (np.isfinite(y_star) & np.isfinite(var_y) & np.isfinite(settle)
@@ -374,6 +383,7 @@ def evaluate(win: Window, model, kind: str, L: int, n: int, sw,
         ok &= ~_window_any(win.excluded, iT, Lw) & ~win.excluded[it]
     return Cell(kind, L, n, {
         "T": T[ok], "t": T[ok] - n, "p_up": p_up[ok], "var_y": var_y[ok],
+        "p_model": p_up[ok], "p_quoted": np.asarray(p_quoted)[ok],
         "y_star": y_star[ok], "resid": resid[ok], "z": z[ok], "up": up[ok],
         "omega": np.full(int(ok.sum()), omega), "n_known": np.full(int(ok.sum()), n_recv),
         "n_transit": np.full(int(ok.sum()), n_transit),
