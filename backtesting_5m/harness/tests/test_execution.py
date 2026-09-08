@@ -80,6 +80,32 @@ def test_the_position_cap_binds_on_the_taker_path_too(flat_episode):
     assert place == []
 
 
+def test_a_live_cross_suppresses_the_next_one_on_that_side(flat_episode):
+    """A taker order in flight is an intention already expressed."""
+    live = [Order(order_id=1, side=Side.BUY, price=0.52, shares=10.0,
+                  liquidity=Liquidity.TAKER, live_from=2, cancel_at=None)]
+    place, cancel = decide(100, 0.52, 0.60, 0.0, flat_episode, live,
+                           ExecConfig(mode="taker"), PARAMS)
+    assert place == [], "the same cross was re-emitted while one was in flight"
+    assert cancel == [], "a taker order cannot be cancelled anyway"
+
+
+def test_in_flight_shares_count_towards_the_cap(flat_episode):
+    """max_pos of one lot with one lot already in flight on that side.
+
+    The stale sell at 0.60 is cancelled, but the cancel has not landed, so it
+    can still fill. Replacing it now would put two lots of short exposure in
+    flight against a cap of one. The replacement waits; the free side does not.
+    """
+    params = QuoteParams(shares=1.0, max_pos=1.0)
+    live = [Order(order_id=1, side=Side.SELL, price=0.60, shares=1.0,
+                  liquidity=Liquidity.MAKER, live_from=0, cancel_at=None)]
+    place, cancel = decide(100, 0.45, 0.52, 0.0, flat_episode, live,
+                           ExecConfig(mode="maker"), params)
+    assert cancel == [1], "the stale sell is still cancelled"
+    assert [o.side for o in place] == [Side.BUY], "the short side is full"
+
+
 def test_a_resting_order_at_the_right_price_is_left_alone(flat_episode):
     place, cancel = decide(100, 0.48, 0.52, 0.0, flat_episode,
                            [_live(0.48, Side.BUY, 1), _live(0.52, Side.SELL, 2)],

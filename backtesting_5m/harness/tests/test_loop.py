@@ -85,6 +85,22 @@ def test_the_position_cap_is_never_exceeded(flat_episode):
     assert out["max_abs_q"] <= 30.0
 
 
+def test_the_cap_holds_when_requoting_faster_than_the_taker_lock(flat_episode):
+    """The in-flight breach: max_pos=1 lot, requoted every index.
+
+    A taker cross cannot be cancelled while the venue holds it, so a cap
+    tested against realised inventory alone re-emits the same cross on every
+    requote until the first fill lands. At requote_every=1 against an always
+    crossable book that bought 9 lots against a cap of 1. The default
+    requote_every=10 hides it, which is why this test uses 1.
+    """
+    ep = flat_episode
+    ep.ask[:] = 0.20
+    out = _run(ep, QuoteParams(e_p=0.0, shares=1.0, max_pos=1.0),
+               ExecConfig(mode="taker", requote_every=1))
+    assert out["max_abs_q"] <= 1.0, "position cap breached by in-flight orders"
+
+
 def test_place_latency_delays_the_first_possible_fill(flat_episode):
     """With a one-second placement delay nothing can trade in the first second."""
     ep = flat_episode
