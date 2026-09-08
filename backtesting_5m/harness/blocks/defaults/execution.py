@@ -57,6 +57,10 @@ Adjust first, snap last -- the conservative direction is unchanged.
 Gates, all of which bind:
   * a book older than max_book_age_ms is not a quote, so we neither post
     against it nor leave orders resting on it
+  * a cancel is only issued to an order a cancel can actually reach. The
+    venue holds a marketable order through its lock window, so an in-flight
+    cross is not retractable -- see `Order.is_cancellable`, which both this
+    branch and the engine's model-outage pull go through.
   * the position cap binds on the TAKER path as well as the maker path
     (the 2026-05-20 taker-cap-bypass lesson), it binds on IN-FLIGHT size and
     it binds PER SIDE. Signed net inventory is the wrong test: a resting sell
@@ -77,7 +81,7 @@ Gates, all of which bind:
 import math
 
 from harness.blocks.defaults.fees import FeeSchedule, Liquidity
-from harness.core.types import OrderRequest, Side
+from harness.core.types import OrderRequest, Side, cancellable_ids
 
 #: Passes of the resting-price fixed point. See the module docstring: the map
 #: contracts by <= 0.014 per pass, so two are already 1e4 times finer than the
@@ -154,7 +158,10 @@ def decide(i, eff_bid, eff_ask, q, ep, live_orders, execn, params):
     )
 
     if not tradable:
-        return [], [o.order_id for o in live_orders]
+        # Pull everything a cancel can still reach -- which is not the same as
+        # everything live. An in-flight cross is inside the venue's lock and
+        # comes back only as a fill or not at all.
+        return [], cancellable_ids(live_orders, i)
 
     cap = params.max_pos if params.max_pos > 0.0 else math.inf
     can_buy = q < cap

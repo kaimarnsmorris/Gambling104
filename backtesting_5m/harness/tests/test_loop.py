@@ -10,6 +10,7 @@ from harness.blocks.defaults import execution, f, fees, fill, link, quote
 from harness.core.config import ExecConfig, QuoteParams
 from harness.core.latency import LatencyModel
 from harness.core.loop import run_episode
+from harness.core.types import Side
 
 BLOCKS = {"f": f.standardise, "link": link.link, "quote": quote.quotes,
           "execution": execution.decide, "fill": fill.resolve,
@@ -143,6 +144,76 @@ def test_a_model_outage_pulls_the_resting_orders(flat_episode):
                       ExecConfig(), seed=0)
     assert out["n_fills"] == 0, (
         "a resting order survived the model outage and filled into the crash")
+
+
+def test_a_cross_inside_the_venue_lock_survives_a_stale_book(flat_episode):
+    """A marketable order the venue is still holding cannot be pulled.
+
+    The cross goes out at index 0 and the venue releases it at index 3 (the
+    250 ms lock, a floor on the taker path). The book goes stale at index 1,
+    and the not-tradable branch cancels -- but a cancel does not reach an
+    order inside the lock, so the cross still arrives and still fills.
+    Retracting it would be the simulation dodging the crosses a moving book
+    picks off, which flatters every number downstream.
+    """
+    ep = flat_episode
+    ep.ask[:] = 0.20
+    ep.book_age_ms[1:] = 5000.0
+
+    out = _run(ep, QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
+               ExecConfig(requote_every=1))
+    assert out["n_fills"] == 1, "the venue released a cross it does not release"
+    assert out["fills"][0]["liquidity"] == int(fees.Liquidity.TAKER)
+    assert out["fills"][0]["t_ms"] == 300
+
+
+def test_a_cross_inside_the_venue_lock_survives_a_model_outage(flat_episode):
+    """The same, on the other cancel path.
+
+    The model goes dark at index 1, so the engine pulls everything it can --
+    which is every resting order and NOT the cross the venue is still holding.
+    Both paths go through the one predicate for exactly this reason.
+    """
+    ep = flat_episode
+    ep.ask[:] = 0.20
+
+    s = ep.s.copy()
+    s[1:] = np.nan
+    blocks = dict(BLOCKS)
+    blocks["s"] = s
+    blocks["sigma"] = np.full(len(ep), 50.0)
+
+    out = run_episode(ep, blocks, QuoteParams(e_p=0.0, shares=10.0,
+                                              max_pos=10.0),
+                      ExecConfig(), seed=0)
+    assert out["n_fills"] == 1, "an in-flight cross was cancelled by an outage"
+    assert out["fills"][0]["liquidity"] == int(fees.Liquidity.TAKER)
+    assert out["fills"][0]["t_ms"] == 300
+
+
+def test_an_unfilled_cross_expires_and_gives_its_cap_room_back(flat_episode):
+    """A cross is live for the tick it arrives on, and not one index longer.
+
+    The book is crossable at index 0 only. The venue releases the order at
+    index 3, by which time the ask is back at 0.51 and there is nothing to
+    lift -- 300 ms is ample for a book to move away, which is the whole reason
+    the lock is modelled. With no expiry that order stays live forever: it
+    holds 10 of the 10 shares of buy-side room the cap allows, so the RESTING
+    bid can never be posted either -- and then it trades anyway, 50 seconds
+    later, against a book nobody ever decided to lift. Here it expires, the
+    room comes back, and the resting bid is touched at index 500 instead.
+    """
+    ep = flat_episode
+    ep.ask[0] = 0.20          # crossable, once
+    ep.ask[500:] = 0.30       # later, a touch on the resting bid
+
+    out = _run(ep, QuoteParams(e_p=0.15, shares=10.0, max_pos=10.0),
+               ExecConfig())
+    assert out["n_fills"] == 1, "the expired cross went on holding cap room"
+    fill = out["fills"][0]
+    assert fill["liquidity"] == int(fees.Liquidity.MAKER)
+    assert fill["side"] == int(Side.BUY)
+    assert fill["t_ms"] == 50_000
 
 
 def test_one_run_both_makes_and_takes(flat_episode):

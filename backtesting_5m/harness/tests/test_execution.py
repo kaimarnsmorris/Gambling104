@@ -274,6 +274,26 @@ def test_a_missing_book_suppresses_all_trading(flat_episode):
     assert cancel == [1], "a missing book must also pull resting orders"
 
 
+def test_a_stale_book_does_not_pull_a_cross_the_venue_is_still_holding(
+        flat_episode):
+    """The not-tradable branch cancels what a cancel can reach, and no more.
+
+    The venue holds a marketable order through its ~250 ms lock, so an order
+    with `live_from` still ahead of us is beyond recall. Pulling it anyway
+    would retract exactly the crosses a moving book picks off -- the book
+    going stale is the moment that matters most.
+    """
+    ep = flat_episode
+    ep.book_age_ms[100] = 5000.0
+    live = [_live(0.48, oid=1),
+            Order(order_id=2, side=Side.BUY, price=0.52, shares=10.0,
+                  liquidity=Liquidity.TAKER, live_from=102, cancel_at=None)]
+    place, cancel = decide(100, 0.48, 0.52, 0.0, ep, live,
+                           ExecConfig(max_book_age_ms=1000.0), PARAMS)
+    assert place == []
+    assert cancel == [1], "the in-flight cross is not the venue's to give back"
+
+
 def test_the_position_cap_binds_on_the_maker_path(flat_episode):
     place, _ = decide(100, 0.48, 0.52, 50.0, flat_episode, [],
                       ExecConfig(), PARAMS)

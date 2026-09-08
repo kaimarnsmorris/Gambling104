@@ -17,10 +17,10 @@ from harness.core.types import Order, Side
 
 
 def _order(side=Side.BUY, price=0.49, live_from=0, cancel_at=None,
-           liquidity=Liquidity.MAKER):
+           liquidity=Liquidity.MAKER, expires_at=None):
     return Order(order_id=1, side=side, price=price, shares=10.0,
                  liquidity=liquidity, live_from=live_from,
-                 cancel_at=cancel_at, reason="test")
+                 cancel_at=cancel_at, reason="test", expires_at=expires_at)
 
 
 def test_a_resting_bid_fills_when_the_ask_reaches_it(flat_episode):
@@ -90,6 +90,23 @@ def test_a_taker_order_does_not_fill_through_its_limit(flat_episode):
     ep = flat_episode
     ep.ask[5] = 0.60
     assert resolve([_order(price=0.55, liquidity=Liquidity.TAKER)], ep, 5, {}) == []
+
+
+def test_an_order_does_not_trade_past_its_expiry(flat_episode):
+    """A marketable order is live for the tick it arrives on, and no longer.
+
+    The engine stamps `expires_at = live_from + 1` on every cross: the venue
+    held it through the lock, and if the book has moved away by the time it
+    arrives there is nothing left to execute against. Without this it goes on
+    holding per-side cap room -- and trades, whenever the book eventually
+    comes back through a limit nobody meant to leave standing.
+    """
+    ep = flat_episode
+    order = _order(price=0.55, liquidity=Liquidity.TAKER,
+                   live_from=4, expires_at=5)
+    assert len(resolve([order], ep, 4, {})) == 1
+    assert resolve([order], ep, 5, {}) == []
+    assert order.is_dead(5) and not order.is_dead(4)
 
 
 def test_no_fill_against_a_missing_book(flat_episode):

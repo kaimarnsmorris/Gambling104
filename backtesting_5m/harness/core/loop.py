@@ -1,8 +1,8 @@
 """The feed loop: one market, 3,000 decisions, in order.
 
 Latency lives HERE, not in the policy block. The policy says what orders
-should exist; this converts that into live_from / cancel_at indices. That is
-why latency can be swept without touching a line of policy.
+should exist; this converts that into live_from / cancel_at / expires_at
+indices. That is why latency can be swept without touching a line of policy.
 """
 import math
 from dataclasses import replace
@@ -11,7 +11,7 @@ import numpy as np
 
 from harness.core.latency import episode_rng
 from harness.core.ledger import Ledger
-from harness.core.types import Order
+from harness.core.types import Liquidity, Order, cancellable_ids
 
 
 def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
@@ -38,6 +38,13 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
     sigma_arr = blocks["sigma"]
 
     for i in range(len(ep)):
+        # Orders that can never trade again are gone BEFORE policy sees them:
+        # a cancel that has landed, or a marketable order past its bounded
+        # life. Leaving an expired cross in `live` would go on consuming
+        # per-side cap room -- and so suppress the resting quote on that side
+        # -- for the rest of the episode.
+        live = [o for o in live if not o.is_dead(i)]
+
         s_i = float(s_arr[i])
         sigma_i = float(sigma_arr[i])
 
@@ -74,6 +81,9 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
         # no reason to leave orders resting unmanaged, with no policy and no
         # book-age gate, filling into whatever the book does next. Placing
         # needs a quote; pulling never does.
+        # A cancel also only reaches what the venue will release: a
+        # marketable order inside its lock window is beyond recall, on this
+        # path exactly as on policy's own. Both go through `cancellable_ids`.
         quoting = math.isfinite(eff_bid) and math.isfinite(eff_ask)
         to_place, to_cancel = [], []
 
@@ -82,7 +92,7 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
                 to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
                                              execn, params)
         elif live:
-            to_cancel = [o.order_id for o in live]
+            to_cancel = cancellable_ids(live, i)
 
         if to_cancel:
             in_move = ep.book_age_ms[i] == 0.0
@@ -93,16 +103,20 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
                     for o in live]
 
         for req in to_place:
-            kind = "take" if req.liquidity else "place"
+            taker = req.liquidity == Liquidity.TAKER
+            kind = "take" if taker else "place"
             drawn = latency.draw(rng, kind)
             live_from = i + latency.delay_idx(drawn)
+            # A marketable order is live for the tick it arrives on and no
+            # longer: the venue held it through the lock, and by `live_from`
+            # the book has had that long to move away. If it is not marketable
+            # then, it is over -- it does not become a resting order, and it
+            # does not go on holding cap room until the market closes.
+            expires_at = live_from + 1 if taker else None
             live.append(Order(next_id, req.side, req.price, req.shares,
                               req.liquidity, live_from, None, req.reason,
-                              latency_ms=drawn))
+                              latency_ms=drawn, expires_at=expires_at))
             next_id += 1
-
-        # drop orders whose cancel has landed
-        live = [o for o in live if o.cancel_at is None or i < o.cancel_at]
 
         if emit_ticks:
             ledger.record_tick(ep, i, s_i, sigma_i, z_i, fair_p,
