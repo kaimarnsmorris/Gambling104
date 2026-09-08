@@ -32,7 +32,10 @@ class QuoteParams:
 class ExecConfig:
     mode: str = "maker"                 # "maker" | "taker" | "both"
     latency: LatencyModel = field(default_factory=LatencyModel)
-    fees: FeeSchedule = field(default_factory=FeeSchedule)
+    #: None means "use whatever the resolved `fees` block supplies", which is
+    #: how an investigation overrides the schedule by dropping in a fees.py.
+    #: A schedule set here is a run parameter and wins over the block.
+    fees: FeeSchedule | None = None
     max_book_age_ms: float = 1000.0
     requote_every: int = 10             # decision indices between requotes
     min_tte_s: float = 0.0
@@ -46,7 +49,6 @@ class Sample:
     t1: int | None = None
     days: tuple = ()
     markets: tuple = ()
-    split: str = "all"                  # "train" | "test" | "all"
     max_markets: int | None = None
     require_spot: bool = False
 

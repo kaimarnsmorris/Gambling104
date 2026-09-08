@@ -82,6 +82,18 @@ def test_the_ledger_carries_liquidity_fees_and_markout(tmp_path, episodes):
     assert (ledger["fee_usd"] > 0).all(), "taker fees are positive"
 
 
+def test_a_fee_schedule_on_the_config_is_honoured(tmp_path, episodes):
+    """`ExecConfig.fees` was declared and never read: the run always built a
+    default schedule from the fees block. It is a documented run parameter."""
+    from harness.blocks.defaults.fees import FeeSchedule
+
+    result = _run(tmp_path, episodes,
+                  execn=ExecConfig(mode="taker",
+                                   fees=FeeSchedule(base_fee_rate=0.0)))
+    assert len(result["ledger"]), "nothing traded, so nothing is proven"
+    assert (result["ledger"]["fee_usd"] == 0.0).all()
+
+
 def test_gates_run_on_every_result(tmp_path, episodes):
     result = _run(tmp_path, episodes)
     assert "gates" in result["summary"]

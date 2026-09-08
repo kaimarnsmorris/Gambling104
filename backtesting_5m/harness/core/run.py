@@ -3,7 +3,6 @@ import json
 import os
 from dataclasses import asdict
 
-import numpy as np
 import pandas as pd
 
 from harness.core import provenance, stats
@@ -41,6 +40,12 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
     modules = {slot: provenance.load_slot(path, slot)
                for slot, path in resolved.items()}
 
+    # A schedule on the config is a run parameter and wins; otherwise the
+    # resolved `fees` block supplies it, so an investigation can still
+    # override the schedule the way it overrides any other slot.
+    fee_schedule = (execn.fees if execn.fees is not None
+                    else modules["fees"].FeeSchedule())
+
     config = {"quote": asdict(quote), "sample": asdict(sample),
               "output": asdict(output), "mode": execn.mode,
               "latency": asdict(execn.latency),
@@ -56,7 +61,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
         "quote": modules["quote"].quotes,
         "execution": modules["execution"].decide,
         "fill": modules["fill"].resolve,
-        "fees": modules["fees"].FeeSchedule(),
+        "fees": fee_schedule,
         "fill_params": dict(execn.fill_params),
     }
 
