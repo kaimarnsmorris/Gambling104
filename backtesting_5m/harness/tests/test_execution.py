@@ -294,6 +294,27 @@ def test_a_stale_book_does_not_pull_a_cross_the_venue_is_still_holding(
     assert cancel == [1], "the in-flight cross is not the venue's to give back"
 
 
+def test_quoting_is_on_the_cadence_and_the_gates_are_not(flat_episode):
+    """`requote_every` throttles pricing only.
+
+    At index 105 with requote_every=10 there is nothing to say about a healthy
+    book -- but a stale one still has to be pulled off at the index it goes
+    stale, not at the next multiple of the cadence.
+    """
+    healthy, cancel = decide(105, 0.48, 0.52, 0.0, flat_episode,
+                             [_live(0.48)], ExecConfig(requote_every=10),
+                             PARAMS)
+    assert healthy == [] and cancel == []
+
+    ep = flat_episode
+    ep.book_age_ms[105] = 5000.0
+    place, cancel = decide(105, 0.48, 0.52, 0.0, ep, [_live(0.48)],
+                           ExecConfig(requote_every=10,
+                                      max_book_age_ms=1000.0), PARAMS)
+    assert place == []
+    assert cancel == [1], "the book-age gate waited for the requote cadence"
+
+
 def test_the_position_cap_binds_on_the_maker_path(flat_episode):
     place, _ = decide(100, 0.48, 0.52, 50.0, flat_episode, [],
                       ExecConfig(), PARAMS)

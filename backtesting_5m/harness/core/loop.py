@@ -3,6 +3,12 @@
 Latency lives HERE, not in the policy block. The policy says what orders
 should exist; this converts that into live_from / cancel_at / expires_at
 indices. That is why latency can be swept without touching a line of policy.
+
+Policy is consulted on EVERY index, not on the requote cadence. `decide` owns
+that cadence itself (it throttles quoting and nothing else) because the gates
+it applies first -- book present, book age, time to expiry -- have to be
+evaluated every index or a book that goes stale between requotes keeps our
+orders resting on it for up to a second.
 """
 import math
 from dataclasses import replace
@@ -88,9 +94,8 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
         to_place, to_cancel = [], []
 
         if quoting:
-            if i % max(1, execn.requote_every) == 0:
-                to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
-                                             execn, params)
+            to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
+                                         execn, params)
         elif live:
             to_cancel = cancellable_ids(live, i)
 

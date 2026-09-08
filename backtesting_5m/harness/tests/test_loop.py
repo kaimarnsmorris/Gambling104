@@ -146,6 +146,25 @@ def test_a_model_outage_pulls_the_resting_orders(flat_episode):
         "a resting order survived the model outage and filled into the crash")
 
 
+def test_a_stale_book_pulls_the_resting_bid_between_requotes(flat_episode):
+    """The book-age gate is not on the requote cadence.
+
+    `requote_every` is how often we RE-PRICE. At the default 10 a resting
+    order used to sit against a book that had gone stale for up to a second,
+    which is exactly the second in which a book stops being a quote and starts
+    being a hole. Here the book goes stale at index 1 and the ask sweeps
+    through our bid at index 5, five indices before the next requote.
+    """
+    ep = flat_episode
+    ep.book_age_ms[1:] = 5000.0
+    ep.ask[5] = 0.30
+
+    out = _run(ep, QuoteParams(e_p=0.15, shares=10.0, max_pos=10.0),
+               ExecConfig(requote_every=10, max_book_age_ms=1000.0))
+    assert out["n_fills"] == 0, (
+        "a resting order filled against a book the gate had already condemned")
+
+
 def test_a_cross_inside_the_venue_lock_survives_a_stale_book(flat_episode):
     """A marketable order the venue is still holding cannot be pulled.
 

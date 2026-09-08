@@ -56,7 +56,12 @@ Adjust first, snap last -- the conservative direction is unchanged.
 
 Gates, all of which bind:
   * a book older than max_book_age_ms is not a quote, so we neither post
-    against it nor leave orders resting on it
+    against it nor leave orders resting on it. That gate is evaluated on
+    EVERY index, not on the requote cadence: `requote_every` is how often we
+    re-price, and pricing is the only thing it may throttle. A book that goes
+    stale at index i is pulled off at index i, not up to `requote_every`
+    indices later, which is why the cadence check below sits AFTER the
+    tradability check and returns cancels through it.
   * a cancel is only issued to an order a cancel can actually reach. The
     venue holds a marketable order through its lock window, so an in-flight
     cross is not retractable -- see `Order.is_cancellable`, which both this
@@ -143,7 +148,13 @@ def resting_quote(fees, target, side, tick):
 
 
 def decide(i, eff_bid, eff_ask, q, ep, live_orders, execn, params):
-    """Return (to_place, to_cancel) at decision index i."""
+    """Return (to_place, to_cancel) at decision index i.
+
+    Called on EVERY index. The tradability gate has to be, because a book
+    that goes stale between requotes still has our orders resting on it; only
+    quoting is throttled to `execn.requote_every`, and that throttle lives
+    here rather than at the call site so the gate cannot be skipped with it.
+    """
     to_place, to_cancel = [], []
 
     # `ExecConfig.fees` is a run parameter; None means "the default schedule".
@@ -162,6 +173,11 @@ def decide(i, eff_bid, eff_ask, q, ep, live_orders, execn, params):
         # everything live. An in-flight cross is inside the venue's lock and
         # comes back only as a fill or not at all.
         return [], cancellable_ids(live_orders, i)
+
+    if i % max(1, execn.requote_every) != 0:
+        # tradable, and not a requote index: nothing to say. Placing a quote
+        # is what the cadence exists to throttle; pulling one never was.
+        return [], []
 
     cap = params.max_pos if params.max_pos > 0.0 else math.inf
     can_buy = q < cap
