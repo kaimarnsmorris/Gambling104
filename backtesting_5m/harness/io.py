@@ -26,6 +26,11 @@ is not installed, the original pyarrow error is re-raised (chained, with a
 note pointing back here) rather than swallowed. The harness gains no hard
 dependency on polars -- it is a diagnostic escape hatch, not a design choice.
 
+When both pandas/pyarrow and polars fail to read, both errors are surfaced
+because either can be the real cause. A schema difference across files in a
+directory (e.g., a column present in only some files that day) is a common
+trigger for failures on directory reads.
+
 `filters` (pyarrow's `[(col, op, value), ...]` predicate-pushdown format) is
 only honored natively on the pyarrow path, where it is pushed into the read.
 On the polars fallback there is no equivalent pushed-down read here -- the
@@ -89,8 +94,14 @@ def read_parquet(path, columns=None, filters=None):
 
         try:
             df = pl.read_parquet(source, columns=columns).to_pandas()
-        except Exception:
-            raise primary_exc from primary_exc
+        except Exception as polars_exc:
+            raise OSError(
+                f"Failed to read {path!r}: both pandas/pyarrow and polars readers failed. "
+                f"Primary error (pyarrow): {primary_exc!r}. "
+                f"Fallback error (polars): {polars_exc!r}. "
+                f"When reading a directory of parquet files, a schema difference across files "
+                f"(e.g., a column present in only some files) is a common cause."
+            ) from polars_exc
 
         if filters:
             df = _apply_filters(df, filters)

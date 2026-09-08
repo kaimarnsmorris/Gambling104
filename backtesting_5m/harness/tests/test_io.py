@@ -92,3 +92,35 @@ def test_fallback_raises_original_error_when_polars_also_unavailable(
 
     with pytest.raises(OSError, match="Repetition level histogram"):
         io.read_parquet(sample_parquet)
+
+
+def test_both_readers_fail_surfaces_both_errors(monkeypatch, sample_parquet):
+    def broken_pandas_read(*args, **kwargs):
+        raise OSError("PRIMARY-BOOM")
+
+    def broken_polars_read(*args, **kwargs):
+        raise ValueError("FALLBACK-BOOM")
+
+    monkeypatch.setattr(io.pd, "read_parquet", broken_pandas_read)
+
+    import polars as pl
+    monkeypatch.setattr(pl, "read_parquet", broken_polars_read)
+
+    with pytest.raises(OSError) as exc_info:
+        io.read_parquet(sample_parquet)
+
+    error_message = str(exc_info.value)
+    assert "PRIMARY-BOOM" in error_message, f"Primary error not in message: {error_message}"
+    assert "FALLBACK-BOOM" in error_message, f"Fallback error not in message: {error_message}"
+
+
+def test_fallback_succeeds_when_only_pandas_fails(monkeypatch, sample_parquet, sample_df):
+    def broken_pandas_read(*args, **kwargs):
+        raise OSError("Repetition level histogram size mismatch")
+
+    monkeypatch.setattr(io.pd, "read_parquet", broken_pandas_read)
+
+    out = io.read_parquet(sample_parquet)
+    pd.testing.assert_frame_equal(
+        out.reset_index(drop=True).sort_values("open_ts").reset_index(drop=True),
+        sample_df.sort_values("open_ts").reset_index(drop=True))
