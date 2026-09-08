@@ -117,6 +117,40 @@ def test_blocks_reproduce_the_export_probability():
 
 
 @pytest.mark.slow
+def test_blocks_reproduce_the_export_probability_at_the_venue_strike():
+    """f() then link(), fed the REAL venue strike, must reproduce the export's own
+    `p_quoted` - the strike the harness will actually use.
+
+    Restored after fix-round 1 (coordinator's Ruling 15): `export/build_export.py`
+    now recomputes `p_model`/`p_quoted` at the venue's own strike (the 60 s Chainlink
+    TWAP ending at open, from `strikes_5m.parquet`) via the model's own
+    `SettlementTail.prob_up`, not via the `t.cdf((z+mu)/sigma_t)` form this test (and
+    `link._prob`) uses - two independent formulas for the same quantity, so this
+    comparison is not circular. `test_blocks_reproduce_the_export_probability` above
+    is kept alongside this one: that test pins the block chain to the model's own
+    math (via a live `evaluate()` call, at whatever strike `evaluate` chooses to
+    linearise around); this one pins the whole chain at the strike the harness will
+    actually price against.
+    """
+    import polars as pl
+
+    import f
+    import link
+    from harness_paths import FAIR_DIR, STRIKES
+
+    df = pl.read_parquet(FAIR_DIR / "baseline.parquet").filter(pl.col("ok"))
+    strikes = pl.read_parquet(STRIKES).select(["market_id", "strike"])
+    j = df.join(strikes, on="market_id").sample(2000, seed=0)
+    z = f.standardise(j["s"].to_numpy(), j["strike"].to_numpy(), j["sigma"].to_numpy())
+    # both signs of moneyness must be exercised, or a sign error could cancel
+    assert (z > 0).sum() > 100 and (z < 0).sum() > 100, (
+        "sample is one-sided; can't rule out a sign error cancelling")
+    p = link._prob(z, j["nu"].to_numpy(), j["mu"].to_numpy(), j["sigma_t"].to_numpy())
+    assert np.allclose(p, j["p_quoted"].to_numpy(), atol=1e-9), (
+        "the block chain disagrees with the export at the venue's own strike")
+
+
+@pytest.mark.slow
 def test_precompute_covers_every_bucket_and_is_causal():
     import polars as pl
 

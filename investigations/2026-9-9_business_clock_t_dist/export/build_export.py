@@ -34,6 +34,7 @@ if str(INV) not in sys.path:
 from fvmodel import config                                  # noqa: E402
 from fvmodel.base import load_params                         # noqa: E402
 from fvmodel.engine import Window, evaluate                  # noqa: E402
+from fvmodel.overrides import quoted_prob                    # noqa: E402
 from export.cache import register_bank                       # noqa: E402
 
 MARKET_LEN = 300           # the 5 m window
@@ -132,6 +133,7 @@ def build(variant: str, t0: int, t1: int, out_path: Path | None = None) -> Path:
     T = (mk["open_ts"].to_numpy() + MARKET_LEN).astype(np.int64)
     ids = mk["market_id"].to_numpy()
     opens = mk["open_ts"].to_numpy().astype(np.int64)
+    strikes_venue = mk["strike"].to_numpy().astype(np.float64)
     n_mk = T.size
 
     burn = loaded.cfg["window"]["burn_days"] * 86400
@@ -153,10 +155,26 @@ def build(variant: str, t0: int, t1: int, out_path: Path | None = None) -> Path:
         pos = np.searchsorted(T, r["T"])
         s = r["strike"] - r["y_star"] * r["p_ref"] * r["omega"]
         sigma = np.sqrt(r["var_y"]) * r["p_ref"] * r["omega"]
+        # `p_model`/`p_quoted` must answer "what does the model say about the venue's
+        # own strike" (the spec: "at the market's real strike, for the scorecard"),
+        # not about `evaluate`'s internal ATM linearisation anchor (`lvl[iO]`) - the
+        # two disagree by real dollars (median ~$3.57 venue vs instantaneous level;
+        # Ruling 15). `s` is exactly strike-free (test_export.py), so the venue's own
+        # y* is recovered by the same affine relationship `evaluate` used internally,
+        # just evaluated at K = strikes_venue instead of at `r["strike"]`. The tail
+        # object (not the t.cdf((z+mu)/sigma_t) form `f`/`link` use) does the
+        # recentring, so this stays an independent computation of the same quantity -
+        # the harness blocks and this export path must not share one formula, or a
+        # test that block output equals this column would be circular.
+        K = strikes_venue[pos]
+        y_star_venue = (K - s) / (r["p_ref"] * r["omega"])
+        p_model = model.tail_for("chainlink_twap60").prob_up(
+            y_star_venue, r["var_y"], r["z"])
+        p_quoted = np.asarray(quoted_prob(model.ov, p_model), dtype=np.float64)
         values = {
             "s": s, "sigma": sigma, "nu": r["nu"], "mu": r["mu"],
-            "sigma_t": r["sigma_t"], "p_model": r["p_model"],
-            "p_quoted": r["p_quoted"], "omega": r["omega"],
+            "sigma_t": r["sigma_t"], "p_model": p_model,
+            "p_quoted": p_quoted, "omega": r["omega"],
             "n_known": r["n_known"], "n_transit": r["n_transit"],
             "m_Y": r["m_Y"], "eps_bar": r["eps_bar"], "carry": r["carry"],
             "var_eps": r["var_eps"], "var_basis": r["var_basis"],
