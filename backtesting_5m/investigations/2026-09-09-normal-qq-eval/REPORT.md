@@ -8,7 +8,7 @@ by sha256 in each run's `manifest.json`.
 policy changed underneath it (see "Not comparable" below), so the earlier
 maker/taker numbers are void and have been overwritten, not appended.
 
-Run artefacts: `runs/2026-09-08T20-05-03__4e2601/` (headline, all plots),
+Run artefacts: `runs/2026-09-08T20-58-41__4e2601/` (headline, all plots),
 `runs/2026-09-08T20-07-49__3fe78a/` (sweeps, base + 5 latency arms + 3 fill
 arms), `runs/2026-09-08T20-10-16__81d426/` (tick emission for the 4 detail
 markets). A 50-market timing probe (3 seeds, ~8 s) was run first and
@@ -40,6 +40,16 @@ real placed price, split by maker (filled marker) vs taker (hollow marker).
 
 ## Headline
 
+> **Re-run 2026-09-09 after the taker-lifecycle fixes.** An unfilled marketable
+> order is now expired rather than resting forever (it had been holding per-side
+> cap room and suppressing the resting quote), marketable orders can no longer be
+> cancelled inside the venue's 250 ms lock, and the stale-book cancel no longer
+> waits for the requote cadence. Net effect: slightly MORE fills (35,828 ->
+> 36,835) and a slightly smaller loss per market, because the simulation had been
+> dodging crosses it should have taken. All three data inputs are now fingerprinted
+> in the manifest. Conclusion unchanged.
+
+
 Sample: **1,553 markets, 2026-08-19 → 08-24** (6 days, `require_spot=True`),
 seeds (0, 1, 2). Quote parameters `e_p=0.01, rpl_p=0.0005, max_pos=50,
 shares=10` — **not optimised, not tuned in response to these results.**
@@ -49,7 +59,7 @@ One run now makes and takes simultaneously. The official headline (from
 
 | | n_markets | n_fills | c/share | $/market | day-blocked CI ($/mkt) | gates |
 |---|---|---|---|---|---|---|
-| **overall (harness pnl_net)** | 1,553 | 35,828 | **−1.482** | **−3.419** | [−4.378, −2.361] | **pass** |
+| **overall (harness pnl_net)** | 1,553 | 36,835 | **−1.420** | **−3.369** | [−4.136, −2.469] | **pass** |
 
 "Gates pass" = the loss is robust: sign survives all 3 calendar periods
 (−1.97, −4.13, −4.39 $/mkt), the day-blocked CI excludes zero, and deleting
