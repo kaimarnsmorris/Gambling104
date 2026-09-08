@@ -2946,7 +2946,20 @@ class ClockGateError(RuntimeError):
 def bucket_venue_l1(df, open_ts, offset_s=0.0):
     """One row per 100 ms bucket of the window opening at `open_ts`."""
     ts = df["ts"].to_numpy(dtype="float64") - offset_s
-    t_ms = np.floor((ts - open_ts) * 1000.0 / paths.BUCKET_MS).astype("int64")
+    # An epoch second near 1.79e9 has a float64 ULP of 2.4e-7 s, so
+    # (ts - open_ts) * 1000 lands up to ~2.4e-4 ms below a whole millisecond:
+    # a genuine observation exactly 0.1 s after the open computes as
+    # 99.9999 ms and would floor into bucket 0 instead of 100. Since a 10 Hz
+    # sampler puts most observations ON those exact multiples, that is the
+    # common case, not an edge case.
+    #
+    # EPS is in BUCKET units and absorbs that error (2.4e-6 buckets) with room
+    # to spare, while only mis-bucketing a real observation falling within a
+    # microsecond of a boundary. Do NOT "fix" this by rounding to the nearest
+    # millisecond first -- that pushes a true 99.6 ms observation into bucket
+    # 100, an error 500x larger than the one being corrected.
+    EPS = 1e-5
+    t_ms = np.floor((ts - open_ts) * 1000.0 / paths.BUCKET_MS + EPS).astype("int64")
     t_ms *= paths.BUCKET_MS
 
     keep = (t_ms >= 0) & (t_ms < paths.H * 1000)
