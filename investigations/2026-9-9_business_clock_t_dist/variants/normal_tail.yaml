@@ -1,0 +1,11 @@
+name: normal_tail
+base_params: model.json@fv-1.0.0
+overrides: {tail_family: normal}
+notes: >
+  Replace the fitted Student-t with a normal. Expected to be clearly worse near
+  expiry, where the fitted nu approaches its 2.5 floor (3 of the 9
+  chainlink_twap60 z-bins are already pinned there), and almost indistinguishable
+  at long horizons where nu is large. The size of the near-expiry gap is what the
+  tail is worth. That cell is also thin: only ~6.2% of markets are still
+  undecided (0.02 < p < 0.98) in the last 30 s, so read the near-expiry number as
+  a small, heavily-filtered sample rather than a pooled statistic.

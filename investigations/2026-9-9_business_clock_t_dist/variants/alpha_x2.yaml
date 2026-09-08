@@ -1,0 +1,6 @@
+name: alpha_x2
+base_params: model.json@fv-1.0.0
+overrides: {alpha_scale: 2.0}
+notes: >
+  Double the location term. If the fitted alpha is right this must be worse
+  than baseline; if it is better, the term is under-scaled on this settlement.

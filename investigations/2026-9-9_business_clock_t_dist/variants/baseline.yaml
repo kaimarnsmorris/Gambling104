@@ -1,0 +1,7 @@
+name: baseline
+base_params: model.json@fv-1.0.0
+overrides: {}
+notes: >
+  Every override at its default. Bit-identical to the shipped model, which
+  tests/test_golden.py enforces. Every other variant is reported as a delta
+  against this row.

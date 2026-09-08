@@ -1,0 +1,12 @@
+name: basis_alt
+base_params: model.json@fv-1.0.0
+overrides: {basis_tracker: alt}
+notes: >
+  The 15 s basis tracker instead of the shipped 60 s one. NOTES E19 found 15 s is
+  the constrained optimum of the extended sweep, and the shipped 60 s was a
+  boundary optimum, so this is the open question that a live comparison was meant
+  to settle. Selecting the alt tracker selects its level AND its residual
+  together (b_alt paired with eps_alt = d_lvl - b_alt); pairing one tracker's
+  level with the other's residual would double-count. Expected to move the level
+  terms - eps_bar and the carry, not just the tracked level - and not the
+  variance; m_Y is untouched.

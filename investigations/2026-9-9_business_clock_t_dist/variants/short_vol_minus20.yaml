@@ -1,0 +1,9 @@
+name: short_vol_minus20
+base_params: model.json@fv-1.0.0
+overrides: {kappa_vol_short: -0.22}
+notes: >
+  Volatility times exp(-0.22) = 0.80 at the sub-minute end only, tapering as
+  min(1, 60/D). Report section 7b found the short end can be off independently
+  of the body, so this is expected to move the near-strike last-30 s cell and to
+  leave the pooled numbers alone. If it moves both, the knob is not doing what
+  it says.

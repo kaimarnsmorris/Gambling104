@@ -1,0 +1,6 @@
+name: eps_x2
+base_params: model.json@fv-1.0.0
+overrides: {eps_scale: 2.0}
+notes: >
+  Double the residual process. Brackets eps_x0; both should lose if the fitted
+  sigma_eps is right.

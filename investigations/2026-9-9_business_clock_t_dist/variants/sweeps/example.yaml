@@ -1,0 +1,7 @@
+name_prefix: volsweep
+max_variants: 12
+base_params: model.json@fv-1.0.0
+notes: A two-dimensional sweep of the level and the short end.
+grid:
+  kappa_vol: [-0.095, 0.0, 0.095]
+  kappa_vol_short: [-0.22, 0.0]

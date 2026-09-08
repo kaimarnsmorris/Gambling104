@@ -1,0 +1,10 @@
+name: fat_tails
+base_params: model.json@fv-1.0.0
+overrides: {kappa_tail: -0.5}
+notes: >
+  nu' = max(2 + (nu-2)*exp(-0.5), 2.5), with sigma rescaled so the standardised
+  variance is unchanged. Pure shape: only the far quantiles move, so this should
+  show up in log-loss on the confident quotes and not in QLIKE. Caution: three of
+  the nine chainlink_twap60 z-bins (nu = [2.60, 2.5, 2.5, 2.5, ...]) are already
+  pinned at the 2.5 floor, so at the shortest horizons this knob is a no-op -
+  kappa_tail cannot move the tail exactly where the tail matters most.

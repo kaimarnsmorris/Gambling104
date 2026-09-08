@@ -1,0 +1,9 @@
+name: shrink_05
+base_params: model.json@fv-1.0.0
+overrides: {shrink_w: 0.5, shrink_decay_s: 60.0}
+notes: >
+  At short business age, shrink log xi half-way to the seasonal-unconditional
+  level, decaying with a 60 s business-time constant. A different remedy for the
+  same complaint as short_vol_minus20 - it shrinks toward a level rather than
+  scaling - so the interesting comparison is between those two, not against
+  baseline.

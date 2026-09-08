@@ -1,0 +1,8 @@
+name: rho_off
+base_params: model.json@fv-1.0.0
+overrides: {rho_kernel: "off"}
+notes: >
+  Set the return autocorrelation kernel to a delta. Removes the 1.18-1.57
+  variance inflation the kernel supplies, so Var_Y falls and
+  E[resid^2/Var_Y] should rise above one across the board. A large move here is
+  the kernel earning its place.

@@ -1,0 +1,7 @@
+name: vol_plus10
+base_params: model.json@fv-1.0.0
+overrides: {kappa_vol: 0.095}
+notes: >
+  Volatility times exp(0.095) = 1.100, at every horizon. Expected to move QLIKE
+  excess and E[resid^2/Var_Y] symmetrically against vol_minus10; if one side
+  wins clearly, the shipped variance level is off in that direction.
