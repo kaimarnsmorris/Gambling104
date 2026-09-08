@@ -2,5 +2,11 @@ name: eps_x2
 base_params: model.json@fv-1.0.0
 overrides: {eps_scale: 2.0}
 notes: >
-  Double the residual process. Brackets eps_x0; both should lose if the fitted
-  sigma_eps is right.
+  Doubles sigma_eps, which quadruples the ε variance contribution to Var_Y; the
+  conditional mean eps_bar = c * eps_last is untouched, since c depends only on
+  the fitted autocorrelation, never on sigma. So this is a pure variance probe,
+  not a doubling of the whole term (that would need eps_condition as well).
+  Expected to move E[resid^2/Var_Y] and QLIKE in the last ~10 s, where the ε
+  variance is a material share of Var_Y, and to leave log-loss's location
+  behaviour alone. Should lose against baseline if the fitted sigma_eps is
+  right; brackets eps_x0.

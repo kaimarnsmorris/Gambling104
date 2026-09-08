@@ -203,7 +203,7 @@ existing branch points; `information_set` (see §4.3) likewise.
 | `kappa_vol_short` | 0.0 | same, weighted `min(1, 60/D_k)` | same site |
 | `shrink_w`, `shrink_decay_s` | 0.0, 60 | `log ξ'_k = (1−w_k) log ξ_k + w_k log ξ̄`, `w_k = shrink_w·exp(−D_k/decay)` | same site, after `kappa_vol` |
 | `rho_kernel` | `conditional` | `conditional` / `unconditional` / `off` | Var_Y assembly |
-| `eps_scale` | 1.0 | scales the ε process (R1) | Var_Y assembly and the ε̄ term |
+| `eps_scale` | 1.0 | scales σ_ε only, so Var_Y's ε contribution scales as `eps_scale²`; ε̄'s coefficient `c` is untouched; `eps_scale = 0` gates the whole term off (R1, amended) | Var_Y assembly; `eps_scale = 0` also removes the ε̄ term via the gate |
 | `eps_condition` | true | condition ε̄ on the last observed ε | ε term |
 | `basis_tracker` | `main` | `main` (60 s) / `alt` (15 s) / `off` (R8) | print model |
 | `information_set` | `full` | `full` / `prints_only` (R9) | print model, quote origin |
@@ -220,10 +220,25 @@ existing branch points; `information_set` (see §4.3) likewise.
 
 ### 4.2 Rulings where the brief is underdetermined
 
-- **R1 — `eps_scale` scales the ε *process*.** It multiplies both σ_ε and the
-  carried `eps_last`, not σ_ε alone. Scaling only σ_ε would leave `eps_x0`
-  still shifting `y*` through `ε̄ = c · eps_last`, so the variant would not mean
-  what its name says. At `eps_scale = 0` the term is exactly off.
+- **R1 (amended by Ruling 17) — `eps_scale` scales σ_ε only, not the carried
+  `eps_last`.** This supersedes the original R1 text above, which called for
+  `eps_scale` to multiply both σ_ε and the carried `eps_last` - that mechanism
+  was never implemented, and the implemented behaviour is kept as the intended
+  design, not a bug to fix. What is actually true: `eps_bar = c · eps_last`
+  with `c = w · ρ(ages)` a function of the fitted autocorrelation alone, so
+  `eps_scale` cannot reach `c` or `eps_last` at any value other than zero — the
+  ε variance contribution scales as `eps_scale²` and the conditional mean is
+  untouched. `eps_x0` still means "ε term off, mean and variance both", but for
+  a different reason than the original text gave: at `eps_scale = 0`,
+  `model.eps.sigma_bp == 0.0` gates the whole ε block off in `engine.py`
+  (mean and variance together), rather than the scale having reached the mean
+  channel directly. Away from zero this is the better-posed knob: it asks a
+  single clean question ("is the fitted ε variance right?") instead of
+  compounding a location shift with a variance change, and it leaves the
+  mean/conditioning question to `eps_condition`, which already tests exactly
+  that ("is the conditional-mean correction right?"). Implementing the
+  original R1 would have muddled two orthogonal questions into one knob.
+  Pinned by `tests/test_overrides_buildtime.py::test_eps_scale_is_variance_only_away_from_zero`.
 - **R2 — `tail_scale` scales μ together with σ.** Otherwise the brief's own
   orthogonality assertion is false: `(y*/sd/e^c − μ)/σ` equals
   `(y*/sd − μ)/(σ e^c)` only when `μ = 0`. Scaling the standardised variable as

@@ -95,13 +95,62 @@ def test_alpha_scales(base):
 
 
 def test_eps_scale_scales_the_process(base):
-    """Spec ruling R1: eps_scale=0 must remove the term, mean as well as variance."""
+    """Spec ruling R1 (amended): eps_scale=0 removes the term entirely, via the
+    sigma_bp == 0.0 gate in engine.py that skips the whole eps block, mean and
+    variance both. Away from zero, eps_scale scales sigma_bp only - see
+    test_eps_scale_is_variance_only_away_from_zero below for the mean/variance
+    split this produces."""
     from fvmodel.overrides import apply_overrides
 
     m = apply_overrides(base, _ov(eps_scale=2.0))
     assert m.eps.sigma_bp == pytest.approx(base.eps.sigma_bp * 2.0)
     m0 = apply_overrides(base, _ov(eps_scale=0.0))
     assert m0.eps.sigma_bp == 0.0
+
+
+def test_eps_scale_is_variance_only_away_from_zero(base):
+    """Spec ruling R1 (amended): eps_scale scales sigma_eps, so the eps VARIANCE
+    contribution scales as eps_scale**2. The conditional-mean coefficient `c` in
+    eps_bar = c * eps_last depends only on the fitted autocorrelation (model.rho),
+    never on sigma - eps_conditional is always called with sigma=1.0 and the
+    result is multiplied by sig**2 afterward (fvmodel/engine.py). So eps_scale
+    cannot move the mean channel; that is eps_condition's job instead.
+
+    At eps_scale = 0.0 the sigma_bp == 0.0 gate skips the whole block, so both c
+    and the variance are zero there - not because eps_scale reached the mean
+    channel, but because the term is off entirely.
+    """
+    from fvmodel.chainlink import eps_conditional
+    from fvmodel.overrides import apply_overrides
+
+    m1 = apply_overrides(base, _ov(eps_scale=1.0))
+    m2 = apply_overrides(base, _ov(eps_scale=2.0))
+    ages = np.array([0.0, 5.0, 12.0, 30.0])
+    w = np.full(ages.size, 1.0 / ages.size)
+
+    # eps_conditional itself is scale-free: it is always called with sigma=1.0 and
+    # the model's rho/kappa are untouched by eps_scale, so c and unit-variance are
+    # identical regardless of which model's eps this came from.
+    c1, q1 = eps_conditional(m1.eps, ages, w, 1.0, "full")
+    c2, q2 = eps_conditional(m2.eps, ages, w, 1.0, "full")
+    assert c1 == pytest.approx(c2), "the mean coefficient must not depend on eps_scale"
+    assert q1 == pytest.approx(q2), "the unit variance must not depend on eps_scale"
+
+    # the variance that actually reaches var_eps is q_unit * sigma_at(v)**2, and
+    # sigma_at scales linearly with sigma_bp - so the realised variance ratio is
+    # eps_scale**2 = 4.0, while the mean channel (c) is untouched.
+    v_local = 0.0005
+    sig1 = m1.eps.sigma_at(v_local)
+    sig2 = m2.eps.sigma_at(v_local)
+    var1 = q1 * sig1 ** 2
+    var2 = q2 * sig2 ** 2
+    assert var2 / var1 == pytest.approx(4.0, rel=1e-12)
+
+    # at eps_scale = 0.0 the block is off entirely: both channels are zero.
+    m0 = apply_overrides(base, _ov(eps_scale=0.0))
+    assert m0.eps.sigma_bp == 0.0
+    c0, q0 = eps_conditional(m0.eps, ages, w, 1.0, "none")
+    assert c0 == 0.0 and q0 == 0.0
 
 
 def test_w_spot_reads_the_per_w_table(base):

@@ -15,7 +15,7 @@ bit-identical to `fv-1.0.0` — `tests/test_golden.py` enforces that.
 | `shrink_w` | positive shrinks toward the unconditional level | 0 … 1 | the same cell as `kappa_vol_short`, by a different mechanism |
 | `shrink_decay_s` | larger = the shrink reaches further out | 15 … 300 | how far up the horizon the shrink is felt |
 | `rho_kernel` | `off` removes the variance inflation | — | `E[resid²/Var_Y]` upward when off |
-| `eps_scale` | scales the ε **process**, mean and sd (R1); 0 = off | 0 … 2 | Var_Y in the last ~10 s; the near-strike cell |
+| `eps_scale` | scales σ_ε only, so the ε **variance** scales as `eps_scale²`; the conditional mean is untouched (see the note below); at `eps_scale = 0` the whole term - mean and variance - is switched off by the sigma gate (R1) | 0 … 2 | Var_Y in the last ~10 s; the near-strike cell |
 | `eps_condition` | false forgets the last observed residual | — | `eps_bar`, and log-loss near expiry |
 | `basis_tracker` | `main` 60 s, `alt` 15 s, `off` no basis | — | the level terms, not the variance — but see the note below, it is not only the level |
 | `information_set` | `prints_only` is the counterparty (R9) | — | everything; this is the lag edge |
@@ -31,6 +31,18 @@ bit-identical to `fv-1.0.0` — `tests/test_golden.py` enforces that.
 | `temperature` | > 1 pulls toward a half; quoting layer only | 0.8 … 1.5 | `p_quoted` **only** — never `p_model` |
 
 ## Traps and gotchas
+
+**`eps_scale` moves the variance, not the mean.** `eps_bar = c * eps_last`, and
+`c = w @ rho_at(ages)` depends only on the fitted autocorrelation - it never
+sees sigma. `eps_conditional` is always called with `sigma=1.0`, and the actual
+variance is `q_unit * sigma_at(v)**2` computed afterward, so `eps_scale` reaches
+only that second factor: `eps_x2`'s variance is ×4, not ×2, and its mean
+coefficient is bit-identical to baseline's. The only way `eps_scale` touches the
+mean channel is at `eps_scale = 0`, where `model.eps.sigma_bp == 0.0` gates the
+whole ε block off in `engine.py` - mean and variance both, because the term
+never runs, not because the scale reached the mean. If you want to test the
+conditional-mean correction itself, use `eps_condition: false` instead - that is
+the knob for that question.
 
 **`w_spot: 0.6` is not baseline.** The per-`w` table is the coarse grid, so it
 gives τ = 0.7872 where the shipped fine-refined value is τ = 0.8447. Leave
