@@ -195,10 +195,38 @@ for i in range(N):
 settle(q, ep.winner_up)
 ```
 
-`execution` owns policy: post vs cross, order lifetime, requote cadence, cancel
-rules, `max_book_age_ms` gating, position caps (**enforced on the taker path
-too** — the 2026-05-20 taker-cap-bypass lesson). `fill` owns whether a live
-order trades and at what price.
+`execution` owns policy: order lifetime, requote cadence, cancel rules,
+`max_book_age_ms` gating, position caps (**enforced on the taker path too**
+— the 2026-05-20 taker-cap-bypass lesson, and enforced per side on in-flight
+size, not on signed net inventory). `fill` owns whether a live order trades and
+at what price.
+
+**Making and taking are not a mode.** There is one policy: it rests on both
+sides *and* crosses the book in the same pass, and there is no `mode` knob to
+pick between them. Fees enter the thresholds themselves, not the PnL
+afterwards — the schedule is dollars per share and the price is a probability,
+so they are directly comparable:
+
+```
+resting_bid = eff_bid - maker_fee(resting_bid)     # maker_fee < 0: posts HIGHER
+resting_ask = eff_ask + maker_fee(resting_ask)     # posts LOWER
+
+buy  (taker) when  book_ask <= eff_bid - taker_fee(book_ask)
+sell (taker) when  book_bid >= eff_ask + taker_fee(book_bid)
+```
+
+The maker rules are *fixed points* — the fee depends on the price being solved
+for — and are solved by two passes of the obvious iteration, which contracts by
+a factor 0.014 per pass and so lands four orders of magnitude inside the 0.01
+tick. The taker rules are not: the price paid is the price on the screen, so
+the fee is evaluated at the book directly. That asymmetry is deliberate.
+
+The rebate justifies posting *inside* fair by up to 0.35 c/share (the all-in
+cost of a maker buy at `P` is `P + fee(P)`, and it is that which must clear
+`eff_bid`). On a 1 c grid the conservative snap — bids down, asks up, applied
+after the fee adjustment — absorbs all of it, so the sign is right but the
+grid cannot express it. The taker threshold is where fee-awareness actually
+bites: crossing on a 1 c edge against a ~1.6 c fee loses by construction.
 
 ### 3.2 Latency
 
@@ -318,15 +346,22 @@ per-market quote-versus-book panels when tick output is on.
 run(
   blocks = BlockSet(),                      # resolved from files; all optional
   quote  = QuoteParams(e_s=, e_z=, e_p=, rpl_s=, rpl_z=, rpl_p=, max_pos=),
-  execn  = ExecConfig(mode="maker"|"taker"|"both",
-                      latency=LatencyModel(place_ms=100, cancel_ms=100,
+  execn  = ExecConfig(latency=LatencyModel(place_ms=100, cancel_ms=100,
                                            take_ms=200, jitter=...),
-                      max_book_age_ms=, fees=FeeSchedule()),
+                      max_book_age_ms=, requote_every=,
+                      min_tte_s=, max_tte_s=, fill_params={},
+                      fees=FeeSchedule()),   # a POLICY input: see 3.1
   sample = Sample(t0=, t1=, days=[], markets=[], tte_range=(),
                   split="train"|"test"|"all", max_markets=),
   output = Output(emit_ticks=False, tick_markets=[], seeds=[0,1,2], plots=True),
 )
 ```
+
+There is no `mode`: making and taking are one policy (§3.1). `fees` is a run
+parameter that the *policy* reads, because the post and cross thresholds are
+fee-adjusted; leaving it `None` falls back to the resolved `fees` block, and
+`run` stamps whichever schedule it resolved back onto the config so the policy
+prices against exactly the schedule the ledger charges.
 
 `Sample` supports an arbitrary time subset — date range, explicit day list,
 explicit market list, or a tau window — so an investigation can target the
