@@ -91,8 +91,17 @@ def _config_hash(config):
 
 def new_run_dir(investigation_dir, config):
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    run_dir = os.path.join(investigation_dir, "runs",
-                           f"{stamp}__{_config_hash(config)}")
+    config_hash = _config_hash(config)
+    counter = None
+    while True:
+        if counter is None:
+            run_name = f"{stamp}__{config_hash}"
+        else:
+            run_name = f"{stamp}-{counter}__{config_hash}"
+        run_dir = os.path.join(investigation_dir, "runs", run_name)
+        if not os.path.exists(run_dir):
+            break
+        counter = 2 if counter is None else counter + 1
     os.makedirs(os.path.join(run_dir, "blocks"), exist_ok=True)
     return run_dir
 

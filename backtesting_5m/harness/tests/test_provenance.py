@@ -71,3 +71,11 @@ def test_hashing_a_file_is_stable(tmp_path):
 def test_a_missing_input_is_fingerprinted_as_absent(tmp_path):
     fp = provenance.fingerprint_input(str(tmp_path / "nope.parquet"))
     assert fp["present"] is False
+
+
+def test_two_runs_of_the_same_config_do_not_collide(tmp_path):
+    """A second run must never silently overwrite the first one's manifest."""
+    a = provenance.new_run_dir(str(tmp_path), {"e_p": 0.01})
+    b = provenance.new_run_dir(str(tmp_path), {"e_p": 0.01})
+    assert a != b
+    assert a.split("__")[-1] == b.split("__")[-1], "config hash still shared"
