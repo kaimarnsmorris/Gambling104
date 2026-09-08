@@ -11,7 +11,8 @@ import pytest
 
 from harness.blocks.defaults.fees import apply_daily_minimum
 from harness.core.config import ExecConfig, Output, QuoteParams, Sample
-from harness.core.sweeps import FILL_ARMS, LATENCY_LADDER_MS, run_with_sweeps
+from harness.core.sweeps import (FILL_ARMS, LATENCY_LADDER_MS,
+                                  _resolve_fill_arm, run_with_sweeps)
 
 
 @pytest.fixture
@@ -47,6 +48,49 @@ def test_the_latency_ladder_is_reported_in_full(tmp_path, episodes):
 def test_every_fill_arm_is_reported(tmp_path, episodes):
     result = _sweep(tmp_path, episodes)
     assert {a["arm"] for a in result["sweeps"]["fill"]} == set(FILL_ARMS)
+
+
+def test_every_fill_arm_resolves_to_a_distinct_configuration():
+    """The failure this file exists to prevent: two arms that are secretly
+    the same run reported as two data points. Compare the actual triple each
+    arm resolves to (fill params, cancel latency, move-cancel latency), not
+    just the dict keys."""
+    base = ExecConfig(mode="taker")
+    triples = []
+    for name, arm_spec in FILL_ARMS.items():
+        resolved = _resolve_fill_arm(base, arm_spec)
+        triples.append((
+            name,
+            tuple(sorted(resolved.fill_params.items())),
+            resolved.latency.cancel_ms,
+            resolved.latency.move_cancel_ms,
+        ))
+    configs = [t[1:] for t in triples]
+    assert len(configs) == len(set(configs)), (
+        f"duplicate effective fill-arm configuration(s): {triples}")
+
+
+def test_optimistic_arm_has_zero_cancel_latency():
+    """optimistic must be a true upper bound: you always pull in time, on
+    both the ordinary and the in-move cancel path."""
+    base = ExecConfig(mode="taker",
+                       latency=ExecConfig().latency.__class__(
+                           cancel_ms=100.0, move_cancel_ms=50.0))
+    resolved = _resolve_fill_arm(base, FILL_ARMS["optimistic"])
+    assert resolved.latency.cancel_ms == 0.0
+    assert resolved.latency.move_cancel_ms is None
+
+
+def test_adverse_lag_and_penetration_track_the_callers_latency():
+    """These two arms differ only in penetration -- the cancel latency the
+    caller configured must pass through unchanged."""
+    base = ExecConfig(mode="taker",
+                       latency=ExecConfig().latency.__class__(
+                           cancel_ms=250.0, move_cancel_ms=75.0))
+    for name in ("adverse_lag", "penetration"):
+        resolved = _resolve_fill_arm(base, FILL_ARMS[name])
+        assert resolved.latency.cancel_ms == 250.0
+        assert resolved.latency.move_cancel_ms == 75.0
 
 
 def test_slower_latency_never_helps_a_taker(tmp_path, episodes):

@@ -17,11 +17,50 @@ from harness.core.run import run
 
 LATENCY_LADDER_MS = (0.0, 100.0, 200.0, 250.0, 500.0)
 
+#: Adverse selection in this harness is modelled by the cancel race, not by
+#: `penetration`: you decide to pull a quote at index i, the cancel lands at
+#: i + cancel_latency, and any cross in between fills you anyway. So a
+#: genuinely optimistic arm must also zero the cancel latency -- otherwise it
+#: is byte-identical to the default arm and the sweep silently runs the same
+#: configuration twice.
+#:
+#: Sentinel distinguishing "override to None" (optimistic's move_cancel_ms,
+#: which falls back to cancel_ms in LatencyModel.draw) from "leave whatever
+#: the caller configured alone" (adverse_lag and penetration, which must
+#: track the caller's latency exactly, not a hardcoded default).
+_KEEP = object()
+
+#: Each arm carries both the fill-params dict and a latency override applied
+#: with dataclasses.replace on execn.latency (cancel_ms, move_cancel_ms).
+#: `_KEEP` means "leave the caller's configured value alone".
 FILL_ARMS = {
-    "optimistic": {"penetration": 0.0},          # upper bound: front of queue
-    "adverse_lag": {"penetration": 0.0},         # default; cancel loses races
-    "penetration": {"penetration": 0.01},        # conservative queue proxy
+    "optimistic": {
+        "fill_params": {"penetration": 0.0},
+        "cancel_ms": 0.0,
+        "move_cancel_ms": None,
+    },  # upper bound: you always pull in time, on the move path too
+    "adverse_lag": {
+        "fill_params": {"penetration": 0.0},
+        "cancel_ms": _KEEP,
+        "move_cancel_ms": _KEEP,
+    },  # default: cancel latency exactly as configured
+    "penetration": {
+        "fill_params": {"penetration": 0.01},
+        "cancel_ms": _KEEP,
+        "move_cancel_ms": _KEEP,
+    },  # conservative queue proxy, cancel latency as configured
 }
+
+
+def _resolve_fill_arm(execn, arm):
+    """Apply an entry of FILL_ARMS to execn, returning a new ExecConfig."""
+    latency_overrides = {k: v for k, v in
+                          (("cancel_ms", arm["cancel_ms"]),
+                           ("move_cancel_ms", arm["move_cancel_ms"]))
+                          if v is not _KEEP}
+    latency = (replace(execn.latency, **latency_overrides)
+               if latency_overrides else execn.latency)
+    return replace(execn, fill_params=arm["fill_params"], latency=latency)
 
 
 def _headline(result):
@@ -45,11 +84,13 @@ def run_with_sweeps(investigation_dir, quote, execn, sample, output, episodes):
                              "run_dir": arm["run_dir"]})
 
     fill_arms = []
-    for name, params in FILL_ARMS.items():
-        arm = run(investigation_dir, quote,
-                  replace(execn, fill_params=params), sample,
+    for name, arm_spec in FILL_ARMS.items():
+        arm_execn = _resolve_fill_arm(execn, arm_spec)
+        arm = run(investigation_dir, quote, arm_execn, sample,
                   replace(output, plots=False), episodes)
-        fill_arms.append({"arm": name, "fill_params": params,
+        fill_arms.append({"arm": name, "fill_params": arm_spec["fill_params"],
+                          "cancel_ms": arm_execn.latency.cancel_ms,
+                          "move_cancel_ms": arm_execn.latency.move_cancel_ms,
                           "headline": _headline(arm),
                           "run_dir": arm["run_dir"]})
 
