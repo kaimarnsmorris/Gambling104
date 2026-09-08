@@ -67,26 +67,37 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
                 live = [o for o in live if o.order_id != fl.order_id]
 
         # --- policy --------------------------------------------------------
-        if math.isfinite(eff_bid) and (i % max(1, execn.requote_every) == 0):
-            to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
-                                         execn, params)
+        # Cancels are NOT conditional on having a quote. `fair` or `vol` can
+        # return NaN -- an EWMA warm-up alone does it -- and a model outage is
+        # no reason to leave orders resting unmanaged, with no policy and no
+        # book-age gate, filling into whatever the book does next. Placing
+        # needs a quote; pulling never does.
+        quoting = math.isfinite(eff_bid) and math.isfinite(eff_ask)
+        to_place, to_cancel = [], []
 
-            if to_cancel:
-                in_move = ep.book_age_ms[i] == 0.0
-                lands = i + latency.delay_idx(
-                    latency.draw(rng, "cancel", in_move=in_move))
-                live = [replace(o, cancel_at=min(lands, o.cancel_at or lands))
-                        if o.order_id in to_cancel else o
-                        for o in live]
+        if quoting:
+            if i % max(1, execn.requote_every) == 0:
+                to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
+                                             execn, params)
+        elif live:
+            to_cancel = [o.order_id for o in live]
 
-            for req in to_place:
-                kind = "take" if req.liquidity else "place"
-                drawn = latency.draw(rng, kind)
-                live_from = i + latency.delay_idx(drawn)
-                live.append(Order(next_id, req.side, req.price, req.shares,
-                                  req.liquidity, live_from, None, req.reason,
-                                  latency_ms=drawn))
-                next_id += 1
+        if to_cancel:
+            in_move = ep.book_age_ms[i] == 0.0
+            lands = i + latency.delay_idx(
+                latency.draw(rng, "cancel", in_move=in_move))
+            live = [replace(o, cancel_at=min(lands, o.cancel_at or lands))
+                    if o.order_id in to_cancel else o
+                    for o in live]
+
+        for req in to_place:
+            kind = "take" if req.liquidity else "place"
+            drawn = latency.draw(rng, kind)
+            live_from = i + latency.delay_idx(drawn)
+            live.append(Order(next_id, req.side, req.price, req.shares,
+                              req.liquidity, live_from, None, req.reason,
+                              latency_ms=drawn))
+            next_id += 1
 
         # drop orders whose cancel has landed
         live = [o for o in live if o.cancel_at is None or i < o.cancel_at]

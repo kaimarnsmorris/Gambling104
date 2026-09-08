@@ -121,6 +121,31 @@ def test_an_unsettled_market_reports_no_pnl(flat_episode):
     assert np.isnan(out["pnl_net"])
 
 
+def test_a_model_outage_pulls_the_resting_orders(flat_episode):
+    """NaN fair is a reason to stop quoting, never a reason to stop cancelling.
+
+    The quote was gated on a finite eff_bid, and so was the whole decide()
+    call -- so when the model went NaN no cancels were issued and the resting
+    buy stayed live with no policy and no book-age gate behind it. `vol.py`
+    returns NaN during EWMA warm-up, so this is reachable, and here the book
+    crashes to 0.30 two indices after the outage begins.
+    """
+    ep = flat_episode
+    ep.ask[1002:] = 0.30          # only crossable AFTER the model goes dark
+
+    s = ep.s.copy()
+    s[1000:] = np.nan             # the outage
+    blocks = dict(BLOCKS)
+    blocks["s"] = s
+    blocks["sigma"] = np.full(len(ep), 50.0)
+
+    out = run_episode(ep, blocks, QuoteParams(e_p=0.15, shares=10.0,
+                                              max_pos=10.0),
+                      ExecConfig(mode="maker"), seed=0)
+    assert out["n_fills"] == 0, (
+        "a resting order survived the model outage and filled into the crash")
+
+
 def test_tick_output_is_off_by_default_and_complete_when_on(flat_episode):
     params = QuoteParams(e_p=0.05, shares=10.0)
     assert _run(flat_episode, params, ExecConfig())["ticks"] == []
