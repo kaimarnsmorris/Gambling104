@@ -1,17 +1,18 @@
 """Pins the spot build's bucketing and its clock gate.
 
 The panel's captures were corrected onto polydata's vantage; stream_venue_l1
-is a different host with its own drifting clock. Joining them without
-measuring the offset would misalign spot and book -- and beta collapses to
-zero inside tau = 13 s, so a silent 50 ms error is the difference between
-signal and noise.
+is a different host with its own drifting clock, and that offset cannot be
+measured from these two streams (they carry receipts of different event
+types). Joining them with an unvalidated configured offset would misalign
+spot and book -- and beta collapses to zero inside tau = 13 s, so a silent
+50 ms error is the difference between signal and noise.
 """
 import numpy as np
 import pandas as pd
 import pytest
 
 from harness.build.spot_5m_100ms import (ClockGateError, bucket_venue_l1,
-                                         measure_offset, require_offset)
+                                         require_offset)
 
 
 def _venue(open_ts=1786665600, n=30, step=0.1):
@@ -50,14 +51,14 @@ def test_observations_outside_the_window_are_dropped():
     assert len(bucket_venue_l1(df, 1786665600)) == 2
 
 
-def test_an_offset_is_recovered_from_a_shifted_clock():
-    panel = np.arange(0.0, 60.0, 0.1)
-    assert measure_offset(panel + 0.074, panel) == pytest.approx(0.074, abs=1e-6)
-
-
-def test_the_gate_rejects_a_day_with_no_measurable_offset():
+def test_the_gate_rejects_a_day_with_no_configured_offset():
     with pytest.raises(ClockGateError, match="2026-08-20"):
         require_offset("2026-08-20", None)
+
+
+def test_the_gate_rejects_a_nan_offset():
+    with pytest.raises(ClockGateError, match="2026-08-20"):
+        require_offset("2026-08-20", float("nan"))
 
 
 def test_the_gate_rejects_an_implausible_offset():

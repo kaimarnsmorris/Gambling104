@@ -5,10 +5,26 @@ mean the same thing: buckets are [t, t+100) since the market open, and the
 FIRST observation in a bucket wins.
 
 THE CLOCK GATE. stream_venue_l1 is recorded on a different host from the
-panel's reference vantage, with an independent and drifting offset. This build
-measures that offset per day and REFUSES TO WRITE if any day lacks a plausible
-one. A silent misalignment would be invisible in the output and fatal in the
-result, because beta(tau, h) is zero inside tau = 13 s.
+panel's reference vantage, with an independent and drifting offset. That
+offset CANNOT be measured from these two streams: the panel's recv_ms records
+receipt of Polymarket order-book updates, while the venue feed's ts records
+receipt of Binance/Coinbase/OKX/Bybit updates on a different host -- there is
+no shared event between the two series to align on. Cross-correlating the
+series would not help either, because the lag between spot moving and the
+Polymarket book responding to it is a real market phenomenon (the very thing
+this harness exists to study), so it cannot be told apart from a clock
+offset by any property of the data.
+
+So the offset used here is a DECLARED ASSUMPTION, passed in by the caller,
+not something this module measures. The default of 0.0 rests on this repo's
+own data/results/vantage_offsets.tsv, which measured same-book inter-host
+drift on this infrastructure at roughly 0-74 ms -- so tens of milliseconds
+bounds the plausible range for a vantage difference, and MAX_PLAUSIBLE_OFFSET_S
+is set well above that band but far below a broken-clock magnitude. A user
+who has independently learned the true venue-to-panel offset should pass it
+explicitly via `offset_s`. Short of that, offset sensitivity is meant to be
+swept the same way latency and fill optimism already are elsewhere in this
+harness, not pinned to a single guessed number.
 """
 import os
 
@@ -23,7 +39,7 @@ SPOT_COL = "bn_spot_mid"
 
 
 class ClockGateError(RuntimeError):
-    """The venue-to-panel clock offset could not be established."""
+    """The configured venue-to-panel clock offset is not plausible."""
 
 
 def bucket_venue_l1(df, open_ts, offset_s=0.0):
@@ -61,25 +77,18 @@ def bucket_venue_l1(df, open_ts, offset_s=0.0):
     return out
 
 
-def measure_offset(venue_ts, panel_ts):
-    """Median venue-minus-panel timestamp difference, in seconds.
-
-    Both captures are ~10 Hz samplers of the same world, so the median
-    difference of their aligned observation times is the vantage offset.
-    """
-    venue_ts = np.asarray(venue_ts, dtype="float64")
-    panel_ts = np.asarray(panel_ts, dtype="float64")
-    n = min(len(venue_ts), len(panel_ts))
-    if n == 0:
-        return None
-    return float(np.median(venue_ts[:n] - panel_ts[:n]))
-
-
 def require_offset(day, offset_s):
-    """The gate. Raises rather than guessing."""
+    """The gate. Validates a CONFIGURED offset; raises rather than guessing.
+
+    stream_venue_l1 and the panel carry receipts of different event streams
+    (venue spot ticks vs. Polymarket book updates), so there is no offset to
+    measure here -- only one to declare. This checks that the declared value
+    is present, finite, and within a plausible vantage-difference magnitude;
+    it does not and cannot verify that the value is correct.
+    """
     if offset_s is None or not np.isfinite(offset_s):
         raise ClockGateError(
-            f"{day}: no venue-to-panel clock offset could be measured. "
+            f"{day}: no venue-to-panel clock offset was configured. "
             f"Refusing to write a misaligned spot panel.")
     if abs(offset_s) > MAX_PLAUSIBLE_OFFSET_S:
         raise ClockGateError(
@@ -89,8 +98,9 @@ def require_offset(day, offset_s):
     return float(offset_s)
 
 
-def build(days=None, out_path=None, panel_path=None):
-    """Join venue L1 onto the panel grid for every day, gated per day."""
+def build(days=None, out_path=None, panel_path=None, offset_s=0.0):
+    """Join venue L1 onto the panel grid for every day, using a configured
+    (not measured) clock offset, gated per day by `require_offset`."""
     out_path = out_path or paths.SPOT
     panel_path = panel_path or paths.PANEL
 
@@ -111,10 +121,11 @@ def build(days=None, out_path=None, panel_path=None):
         venue = venue.dropna(subset=["ts", SPOT_COL]).sort_values("ts")
 
         day_panel = panel[panel["day"] == day]
-        offset = require_offset(day, measure_offset(
-            venue["ts"].to_numpy(),
-            day_panel["recv_ms"].to_numpy(dtype="float64") / 1000.0))
-        offsets.append({"day": day, "offset_s": offset, "n": len(venue)})
+        offset = require_offset(day, offset_s)
+        offsets.append({
+            "day": day, "offset_s": offset, "n": len(venue),
+            "source": "configured",
+        })
 
         for open_ts in sorted(day_panel["open_ts"].unique()):
             window = venue[(venue["ts"] >= open_ts + offset - 1.0)
