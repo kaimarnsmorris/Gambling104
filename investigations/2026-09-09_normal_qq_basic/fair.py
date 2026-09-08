@@ -1,21 +1,36 @@
 """s -- the expected settling TWAP, in USD.
 
-The 5 m market settles on Chainlink's 60 s TWAP, and this is the cheapest
-honest proxy for it: a 60 s halflife EWM of the venue mid. The smoother is not
-noise reduction, it is an impersonation -- the settling number is an average
-over the last minute, so a spot estimate that tracks the tick is estimating the
-wrong quantity.
+The market does not settle on a price, it settles on a 60 s Chainlink TWAP.
+So the quantity to forecast is an AVERAGE over [T-w, T], and this block is its
+conditional expectation, E[A_T | F_t], which has two regimes:
 
-WHY IT UPDATES ON OBSERVATIONS, NOT ON INDICES: `shift_to_decision_grid`
-carries the last spot forward, so `ep.spot` has no gaps -- it repeats. Feeding
-a repeat back into the EWM would pull s toward a stale price at the 10 Hz grid
-rate purely because nothing happened. `spot_age_ms == 0` is exactly the "the
-bucket before this index held news" flag, so that is the update trigger, and dt
-is the real elapsed time since the previous update.
+    tau >= w   E[A] = S_t
+               the whole average is still in the future and S is a martingale,
+               so today's spot IS the forecast
 
-The scan is duplicated in `vol.py` rather than shared. Blocks are frozen into a
-run one file per slot, so a block that imports its neighbour is a block whose
-frozen copy no longer means what it meant.
+    tau <  w   E[A] = (1 - tau/w) * TWAP_realised + (tau/w) * S_t
+               the elapsed part of the window is no longer a forecast, it is a
+               measurement, so it enters at full weight
+
+An EWM lagged to "impersonate" the TWAP would be a biased estimator of the
+first regime, which is 80 % of the window. The lag is not the answer; the
+explicit average is. What remains of the smoother here is a short denoise on
+the venue mid -- 2 s, against the 60 s of the averaging -- because the
+bookTicker tick is not itself the Chainlink feed. Set it to 0 for raw spot.
+
+TWO OPPOSITE READINGS OF THE SAME ARRAY, both deliberate:
+
+  * S_t updates only where `spot_age_ms == 0`. The panel carries the last spot
+    forward, and a repeat is not news; letting it update would drag the level
+    at 10 Hz because nothing happened.
+  * TWAP_realised averages EVERY bucket, carried values included. A flat mean
+    over a uniform 100 ms grid IS the time-weighted average, and time passes
+    whether or not a quote arrives. Skipping carried buckets here would
+    silently reweight the average toward the busy moments.
+
+`vol.py` carries its own copy of the window length, and its own scan. Blocks
+are frozen into a run one file per slot, so a block that imports its neighbour
+is a block whose frozen copy no longer means what it meant.
 """
 import math
 
@@ -23,28 +38,50 @@ import numpy as np
 
 from harness.paths import BUCKET_MS
 
-S_HALFLIFE_S = 60.0             # Chainlink's own TWAP window
+TWAP_WINDOW_S = 60.0            # Chainlink's lookback, per the 2026-08-14 era
+SPOT_SMOOTH_HALFLIFE_S = 2.0    # denoise on the venue mid; 0 disables
 
 
 def precompute(ep):
-    """The EWM level visible at each decision index. NaN before the first."""
+    """E[settling TWAP] at each decision index. NaN before the first spot."""
     spot = np.asarray(ep.spot, dtype="float64")
     age = np.asarray(ep.spot_age_ms, dtype="float64")
     bucket_s = BUCKET_MS / 1000.0
 
     out = np.full(len(ep), np.nan)
-    level = float("nan")
+    level = float("nan")        # S_t, the smoothed current spot
     prev = -1
+    window_sum = 0.0
+    window_n = 0
 
     for i in range(len(ep)):
-        if age[i] == 0.0 and np.isfinite(spot[i]) and spot[i] > 0.0:
-            if prev < 0:
-                level = float(spot[i])
+        px = float(spot[i])
+        usable = np.isfinite(px) and px > 0.0
+
+        if usable and age[i] == 0.0:
+            if prev < 0 or SPOT_SMOOTH_HALFLIFE_S <= 0.0:
+                level = px
             else:
                 dt = (i - prev) * bucket_s
-                alpha = 1.0 - math.exp(-dt * math.log(2.0) / S_HALFLIFE_S)
-                level = alpha * float(spot[i]) + (1.0 - alpha) * level
+                alpha = 1.0 - math.exp(
+                    -dt * math.log(2.0) / SPOT_SMOOTH_HALFLIFE_S)
+                level = alpha * px + (1.0 - alpha) * level
             prev = i
-        out[i] = level
+
+        tau = ep.tte_s(i)
+        if tau > TWAP_WINDOW_S:
+            out[i] = level
+            continue
+
+        if usable:
+            window_sum += px
+            window_n += 1
+
+        if window_n == 0 or not np.isfinite(level):
+            out[i] = level
+            continue
+
+        frac = max(0.0, tau) / TWAP_WINDOW_S
+        out[i] = (1.0 - frac) * (window_sum / window_n) + frac * level
 
     return out

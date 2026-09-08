@@ -148,9 +148,18 @@ def _dense(rate, s0=100_000.0):
 
 BUCKET_S = 0.1
 YEAR_S = 365.25 * 24 * 3600
+W = 60.0                    # the Chainlink TWAP window
 
 
-# --- fair: the 60 s EWM of spot --------------------------------------------
+def _tau_eff(i):
+    """The effective time at index i. Pinned per regime by its own tests."""
+    tau = 300.0 - i * BUCKET_S
+    if tau >= W:
+        return tau - 2.0 * W / 3.0
+    return tau ** 3 / (3.0 * W * W)
+
+
+# --- fair: E[settling TWAP] ------------------------------------------------
 
 def test_s_is_missing_until_the_first_spot_becomes_visible():
     """Index 0 can see no bucket at all, so there is nothing to average."""
@@ -162,20 +171,6 @@ def test_s_is_missing_until_the_first_spot_becomes_visible():
 def test_s_seeds_at_the_first_observation_rather_than_at_zero():
     ep = _dense(4.5e-5)
     assert fair.precompute(ep)[1] == pytest.approx(100_000.0)
-
-
-def test_s_is_a_sixty_second_halflife_ewm_of_the_spot():
-    ep = _dense(4.5e-5)
-    s = fair.precompute(ep)
-    a = 1.0 - math.exp(-BUCKET_S * math.log(2.0) / 60.0)
-
-    s1 = 100_000.0
-    s2 = a * float(ep.spot[2]) + (1.0 - a) * s1
-    s3 = a * float(ep.spot[3]) + (1.0 - a) * s2
-
-    assert s[1] == pytest.approx(s1, rel=1e-12)
-    assert s[2] == pytest.approx(s2, rel=1e-12)
-    assert s[3] == pytest.approx(s3, rel=1e-12)
 
 
 def test_s_lags_a_rising_spot():
@@ -231,8 +226,7 @@ def test_sigma_matches_the_closed_form_for_a_constant_return_path():
     for i in (6, 500, 2999):
         updates = i - 1
         rv = per_sec * (1.0 - (1.0 - alpha) ** updates)
-        tte = 300.0 - i * BUCKET_S
-        expected = math.sqrt(rv * YEAR_S) * math.sqrt(tte / YEAR_S)
+        expected = math.sqrt(rv * YEAR_S) * math.sqrt(_tau_eff(i) / YEAR_S)
         assert sigma[i] == pytest.approx(expected, rel=1e-10)
 
 
@@ -254,8 +248,7 @@ def test_sigma_counts_observations_not_grid_ticks_and_uses_their_spacing():
 
     alpha = 1.0 - math.exp(-1.0 / 100.0)
     rv = (rate ** 2 / 1.0) * (1.0 - (1.0 - alpha) ** 5)
-    tte = 300.0 - 51 * BUCKET_S
-    expected = math.sqrt(rv * YEAR_S) * math.sqrt(tte / YEAR_S)
+    expected = math.sqrt(rv * YEAR_S) * math.sqrt(_tau_eff(51) / YEAR_S)
     assert sigma[51] == pytest.approx(expected, rel=1e-10)
 
 
@@ -278,7 +271,7 @@ def test_sigma_is_neither_shrunk_nor_clamped_toward_a_prior():
     prior would pull the ratio well below the 1e6 the rates are apart.
     """
     i = 2999
-    to_annual = math.sqrt((300.0 - i * BUCKET_S) / YEAR_S)
+    to_annual = math.sqrt(_tau_eff(i) / YEAR_S)
     quiet = vol.precompute(_dense(1e-8))[i] / to_annual
     wild = vol.precompute(_dense(1e-2))[i] / to_annual
 
@@ -362,3 +355,122 @@ def test_a_market_with_no_spot_feed_trades_nothing_rather_than_guessing():
     assert out["n_fills"] == 0
     assert all(math.isnan(t["fair_p"]) for t in out["ticks"])
     assert len(out["ticks"]) == N_BUCKET
+
+
+# --- the settling average, not the settling tick ---------------------------
+#
+# The market settles on a 60 s TWAP, so the quantity being predicted is an
+# AVERAGE over [T-w, T], not the price at T. Two things follow, and these
+# tests pin both: the variance of an average is smaller than the variance of
+# its endpoint, and once the averaging window opens, part of the settlement is
+# already known rather than forecast.
+
+def _rv_closed(rate, updates):
+    """The EWMA variance after `updates` constant returns, in closed form."""
+    alpha = 1.0 - math.exp(-BUCKET_S / 100.0)
+    return (rate ** 2 / BUCKET_S) * (1.0 - (1.0 - alpha) ** updates)
+
+
+def _step_episode():
+    """Spot flat at 100,000 until the averaging window opens, then 101,000.
+
+    Bucket 2399 is the last at 100,000, so decision index 2400 -- the first
+    index inside the window -- still sees the old level, and every later index
+    sees the new one. That makes both the realised average and the smoothed
+    spot exact rationals.
+    """
+    from harness.paths import N_BUCKET
+
+    path = np.where(np.arange(N_BUCKET) < 2400, 100_000.0, 101_000.0)
+    return _episode(np.arange(N_BUCKET) * 100, path, strike=100_000.0)
+
+
+def test_the_effective_time_removes_two_thirds_of_the_window_before_averaging():
+    """tau_eff = tau - 2w/3 while the whole average is still in the future.
+
+    Dividing sigma^2 by the closed-form variance isolates the time weighting
+    from the EWMA recursion, so this test moves only if the weighting moves.
+    """
+    rate = 4.5e-5
+    sigma = vol.precompute(_dense(rate))
+    for i in (6, 500, 2400):
+        tau = 300.0 - i * BUCKET_S
+        tau_eff = sigma[i] ** 2 / _rv_closed(rate, i - 1)
+        assert tau_eff == pytest.approx(tau - 2.0 * W / 3.0, rel=1e-9)
+
+
+def test_the_effective_time_is_cubic_once_the_averaging_has_begun():
+    """Inside the window only the unelapsed tail is still random."""
+    rate = 4.5e-5
+    sigma = vol.precompute(_dense(rate))
+    for i in (2700, 2900, 2999):
+        tau = 300.0 - i * BUCKET_S
+        tau_eff = sigma[i] ** 2 / _rv_closed(rate, i - 1)
+        assert tau_eff == pytest.approx(tau ** 3 / (3.0 * W * W), rel=1e-9)
+
+
+def test_the_two_effective_time_regimes_meet_where_the_window_opens():
+    """tau = w gives w/3 from either branch, so sigma has no step in it."""
+    rate = 4.5e-5
+    sigma = vol.precompute(_dense(rate))
+    tau_eff = sigma[2400] ** 2 / _rv_closed(rate, 2399)
+    assert tau_eff == pytest.approx(W / 3.0, rel=1e-9)
+
+
+def test_averaging_shrinks_sigma_hardest_near_expiry():
+    """A tenth of a second from expiry the settling average is nearly fixed."""
+    rate = 4.5e-5
+    sigma = vol.precompute(_dense(rate))
+    point = math.sqrt(_rv_closed(rate, 2998) * 0.1)
+    assert sigma[2999] < 0.15 * point
+
+
+def test_s_is_the_current_spot_while_the_average_is_still_in_the_future():
+    """E[A] = S_t out there: the settling average is a martingale from here.
+
+    The rising path is what discriminates. At this rate a 2 s smoother sits
+    ~0.13 % under spot and a 60 s one ~3.9 % under it, so the tolerance admits
+    a light denoise and rejects a lag that is impersonating the TWAP.
+    """
+    s = fair.precompute(_step_episode())
+    assert s[2000] == pytest.approx(100_000.0, rel=1e-9)
+    assert s[2400] == pytest.approx(100_000.0, rel=1e-9)
+
+    ep = _dense(4.5e-5)
+    assert fair.precompute(ep)[2000] == pytest.approx(
+        float(ep.spot[2000]), rel=5e-3)
+
+
+def test_s_smooths_the_spot_with_a_short_halflife():
+    ep = _dense(4.5e-5)
+    s = fair.precompute(ep)
+    a = 1.0 - math.exp(-BUCKET_S * math.log(2.0) / fair.SPOT_SMOOTH_HALFLIFE_S)
+
+    s2 = a * float(ep.spot[2]) + (1.0 - a) * 100_000.0
+    s3 = a * float(ep.spot[3]) + (1.0 - a) * s2
+    assert s[2] == pytest.approx(s2, rel=1e-12)
+    assert s[3] == pytest.approx(s3, rel=1e-12)
+
+
+def test_s_weights_the_realised_average_by_the_elapsed_fraction():
+    """Inside the window the elapsed part is KNOWN, so it enters at full weight.
+
+    At index 2999 the window holds one bucket at 100,000 and 599 at 101,000,
+    and the 2 s smoother has had 60 s to reach 101,000, so every term is exact.
+    """
+    s = fair.precompute(_step_episode())
+    twap = (100_000.0 + 599 * 101_000.0) / 600.0
+    frac = 0.1 / W
+    assert s[2999] == pytest.approx((1.0 - frac) * twap + frac * 101_000.0,
+                                    rel=1e-9)
+
+
+def test_s_is_pulled_toward_the_realised_average_and_away_from_spot():
+    """Halfway through the window a fresh jump is only half believed.
+
+    At index 2700 the window holds 1 bucket at 100,000 and 300 at 101,000, and
+    tau/w is exactly a half.
+    """
+    s = fair.precompute(_step_episode())
+    twap = (100_000.0 + 300 * 101_000.0) / 301.0
+    assert s[2700] == pytest.approx(0.5 * twap + 0.5 * 101_000.0, rel=1e-6)
