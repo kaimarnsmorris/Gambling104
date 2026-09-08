@@ -29,6 +29,7 @@ import pandas as pd                       # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 
 from harness.blocks.defaults.fees import Liquidity          # noqa: E402
+LIQ_MAKER = int(Liquidity.MAKER)
 from harness.io import read_parquet                        # noqa: E402
 from harness.core.provenance import load_slot, resolve_slots  # noqa: E402
 from harness.build.episodes import load_episodes           # noqa: E402
@@ -98,21 +99,42 @@ def plot_market_detail(ticks, ledger, market_id, path):
            label="book ask")
     ax.plot(tte_s, t["mid"], color="0.3", lw=0.8, label="mid")
     ax.plot(tte_s, t["fair_p"], color="tab:blue", lw=1.3, label="fair_p")
-    ax.plot(tte_s, t["eff_bid"], color="tab:orange", lw=1.0, label="eff_bid")
-    ax.plot(tte_s, t["eff_ask"], color="tab:purple", lw=1.0, label="eff_ask")
+    ax.plot(tte_s, t["eff_bid"], color="tab:orange", lw=1.0, ls=":",
+           label="eff_bid (theoretical, not an order price)")
+    ax.plot(tte_s, t["eff_ask"], color="tab:purple", lw=1.0, ls=":",
+           label="eff_ask (theoretical, not an order price)")
 
-    buys = fills[fills["side"] == 1]
-    sells = fills[fills["side"] == -1]
-    if len(buys):
-        ax.scatter(300.0 - buys["t_ms"] / 1000.0, buys["price"], **BUY_MARKER)
-    if len(sells):
-        ax.scatter(300.0 - sells["t_ms"] / 1000.0, sells["price"],
-                  **SELL_MARKER)
+    # `price` on a fill IS the actual placed/executed order price: for a
+    # maker fill it is the fee-adjusted, snapped resting limit; for a taker
+    # fill it is the crossing price paid. eff_bid/eff_ask above are the
+    # unsnapped theoretical valuation that price is derived from -- they are
+    # deliberately not the same series (see harness/core/ledger.py).
+    is_maker = fills["liquidity"] == LIQ_MAKER
+    buys_maker = fills[(fills["side"] == 1) & is_maker]
+    buys_taker = fills[(fills["side"] == 1) & ~is_maker]
+    sells_maker = fills[(fills["side"] == -1) & is_maker]
+    sells_taker = fills[(fills["side"] == -1) & ~is_maker]
+    if len(buys_maker):
+        ax.scatter(300.0 - buys_maker["t_ms"] / 1000.0, buys_maker["price"],
+                  **{**BUY_MARKER, "label": "buy (maker, placed price)"})
+    if len(buys_taker):
+        ax.scatter(300.0 - buys_taker["t_ms"] / 1000.0, buys_taker["price"],
+                  marker="^", facecolors="none", edgecolors="tab:green",
+                  s=40, zorder=5, linewidths=1.3,
+                  label="buy (taker, placed price)")
+    if len(sells_maker):
+        ax.scatter(300.0 - sells_maker["t_ms"] / 1000.0, sells_maker["price"],
+                  **{**SELL_MARKER, "label": "sell (maker, placed price)"})
+    if len(sells_taker):
+        ax.scatter(300.0 - sells_taker["t_ms"] / 1000.0, sells_taker["price"],
+                  marker="v", facecolors="none", edgecolors="tab:red",
+                  s=40, zorder=5, linewidths=1.3,
+                  label="sell (taker, placed price)")
 
     ax.set_ylabel("probability")
     ax.set_title(f"...{market_id[-12:]}: quotes, fair value and fills",
                 fontsize=10)
-    ax.legend(fontsize=7, ncol=3, loc="upper left")
+    ax.legend(fontsize=6.5, ncol=2, loc="upper left")
 
     axes[1].plot(tte_s, t["q"], color="tab:blue", lw=1.0)
     axes[1].axhline(0.0, color="0.6", lw=0.6)

@@ -55,6 +55,7 @@ def main():
         sample=sample,
         output=Output(seeds=(0, 1, 2), plots=True),
         episodes=episodes,
+        inputs=(paths.SPOT,),
     )
     print(f"headline: {time.time()-t1:.1f}s -> {headline['run_dir']}")
     print(headline["summary"]["headline"])
@@ -76,6 +77,7 @@ def main():
         sample=sample,
         output=Output(seeds=(0,), plots=False),
         episodes=sweep_episodes,
+        inputs=(paths.SPOT,),
     )
     print(f"sweeps: {time.time()-t2:.1f}s -> {sweep_res['run_dir']}")
     results["sweeps"] = sweep_res
@@ -99,6 +101,7 @@ def main():
         output=Output(emit_ticks=True, tick_markets=tuple(chosen),
                       seeds=(0,), plots=False),
         episodes=detail_episodes,
+        inputs=(paths.SPOT,),
     )
     print(f"detail (ticks): {time.time()-t3:.1f}s -> {detail_res['run_dir']}")
     results["detail"] = detail_res
