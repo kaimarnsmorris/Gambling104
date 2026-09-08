@@ -47,6 +47,15 @@ T1 = 1788220799          # 2026-08-31 23:59:59 UTC, the last perp bar
 def build_aligned(force: bool = False) -> Path:
     if ALIGNED.exists() and not force:
         return ALIGNED
+    # Vendored change: the aligned frame lives in the READ-ONLY source checkout, so
+    # this vendored copy may read it but must never rebuild it in place. Rebuilding
+    # is still available where it belongs - in the source repo - and failing loudly
+    # here is the only alternative to silently writing into a tree we do not own.
+    raise FileNotFoundError(
+        "the aligned 1 s frame is missing at %s.\n"
+        "This vendored clkit reads that file but must not rebuild it: it lives in "
+        "the read-only source checkout. Rebuild it there (run the source repo's own "
+        "build), or point FV_SOURCE_ROOT at a checkout that has it." % ALIGNED)
     n = T1 - T0 + 1
     ts = np.arange(T0, T1 + 1, dtype=np.int64)
 
