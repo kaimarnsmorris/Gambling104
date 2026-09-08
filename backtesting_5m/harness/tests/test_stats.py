@@ -45,11 +45,22 @@ def test_a_strong_positive_edge_has_a_ci_above_zero():
     assert lo > 0.0 and hi > lo
 
 
-def test_noise_has_a_ci_spanning_zero():
-    rng = np.random.default_rng(1)
-    m = _markets(rng.normal(0.0, 1.0, 400))
-    lo, hi = stats.day_blocked_ci(m, n_boot=2000, seed=0)
-    assert lo < 0.0 < hi
+def test_noise_rarely_looks_significant():
+    """A 95 % CI on pure noise must span zero for the large majority of draws.
+
+    Not for every draw -- that is exactly what "95 %" means, and with 40 day
+    blocks the standard error is small enough that an unlucky sample mean sits
+    two standard errors from zero. Asserting a single seed spans zero would be
+    asserting something false about one draw in twenty; the honest claim is
+    about the rate.
+    """
+    spans = 0
+    for seed in range(20):
+        rng = np.random.default_rng(seed)
+        m = _markets(rng.normal(0.0, 1.0, 400))
+        lo, hi = stats.day_blocked_ci(m, n_boot=500, seed=0)
+        spans += bool(lo < 0.0 < hi)
+    assert spans >= 17, f"only {spans}/20 noise samples spanned zero"
 
 
 def test_the_bootstrap_resamples_days_not_markets():
