@@ -94,6 +94,29 @@ def test_a_fee_schedule_on_the_config_is_honoured(tmp_path, episodes):
     assert (result["ledger"]["fee_usd"] == 0.0).all()
 
 
+def test_configs_differing_only_in_fill_params_hash_differently(tmp_path,
+                                                                episodes):
+    """The shipped sweep's failure: `adverse_lag` and `penetration` differ ONLY
+    in fill_params, so they produced run folders with the same hash suffix and
+    byte-identical config blocks -- you could not tell which arm a folder was.
+    """
+    a = _run(tmp_path, episodes,
+             execn=ExecConfig(mode="taker", fill_params={"penetration": 0.0}))
+    b = _run(tmp_path, episodes,
+             execn=ExecConfig(mode="taker", fill_params={"penetration": 0.01}))
+    assert a["run_dir"].split("__")[-1] != b["run_dir"].split("__")[-1]
+
+
+def test_the_hashed_config_carries_the_parameters_that_change_a_run(tmp_path,
+                                                                    episodes):
+    result = _run(tmp_path, episodes)
+    manifest = json.loads(
+        open(os.path.join(result["run_dir"], "manifest.json")).read())
+    assert {"fill_params", "min_tte_s", "max_tte_s", "fees"} <= set(
+        manifest["config"])
+    assert manifest["config"]["fees"]["base_fee_rate"] == pytest.approx(0.07)
+
+
 def test_gates_run_on_every_result(tmp_path, episodes):
     result = _run(tmp_path, episodes)
     assert "gates" in result["summary"]

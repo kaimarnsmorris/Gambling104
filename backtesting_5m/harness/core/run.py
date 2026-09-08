@@ -1,7 +1,7 @@
 """Resolve blocks, select a sample, replay it, score it, write it down."""
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 
 import pandas as pd
 
@@ -13,6 +13,42 @@ from harness.core.loop import run_episode
 #: red_fast at +0.124, CI [+0.025, +0.229]). Carried on every run so no result
 #: leaves here pretending the replay clock is free.
 GRID_BIAS_USD_PER_MARKET = 0.13
+
+
+def _fee_fields(schedule):
+    """The fee schedule as plain fields, for hashing. Never its identity."""
+    if is_dataclass(schedule):
+        return asdict(schedule)
+    try:
+        return {k: v for k, v in sorted(vars(schedule).items())
+                if not k.startswith("_")}
+    except TypeError:
+        return {"repr": repr(schedule)}
+
+
+def config_dict(quote, execn, sample, output, fee_schedule):
+    """Everything that makes this run a different run.
+
+    The run-folder suffix is a hash of this, so anything omitted here makes two
+    genuinely different configurations look identical on disk. `fill_params`,
+    the time-to-expiry window and the fee schedule were all omitted, which is
+    how the `adverse_lag` and `penetration` sweep arms -- differing ONLY in
+    fill_params -- shipped run folders with the same suffix and byte-identical
+    config blocks. That inverts what the hash is for.
+    """
+    return {
+        "quote": asdict(quote),
+        "sample": asdict(sample),
+        "output": asdict(output),
+        "mode": execn.mode,
+        "latency": asdict(execn.latency),
+        "max_book_age_ms": execn.max_book_age_ms,
+        "requote_every": execn.requote_every,
+        "min_tte_s": execn.min_tte_s,
+        "max_tte_s": execn.max_tte_s,
+        "fill_params": dict(execn.fill_params),
+        "fees": _fee_fields(fee_schedule),
+    }
 
 
 def _select(episodes, sample):
@@ -46,11 +82,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes):
     fee_schedule = (execn.fees if execn.fees is not None
                     else modules["fees"].FeeSchedule())
 
-    config = {"quote": asdict(quote), "sample": asdict(sample),
-              "output": asdict(output), "mode": execn.mode,
-              "latency": asdict(execn.latency),
-              "max_book_age_ms": execn.max_book_age_ms,
-              "requote_every": execn.requote_every}
+    config = config_dict(quote, execn, sample, output, fee_schedule)
 
     run_dir = provenance.new_run_dir(investigation_dir, config)
     provenance.write_manifest(run_dir, config, resolved, seeds=output.seeds)
