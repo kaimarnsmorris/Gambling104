@@ -68,3 +68,23 @@ def test_the_gate_rejects_an_implausible_offset():
 
 def test_the_gate_accepts_a_plausible_offset():
     assert require_offset("2026-08-20", 0.074) == pytest.approx(0.074)
+
+
+def test_bucketing_survives_float_error_without_overcorrecting():
+    """Pins both sides of the boundary problem.
+
+    An observation exactly 0.1 s after the open must land in bucket 100 despite
+    float64 giving 99.9999 ms -- and one genuinely at 99.6 ms must still land
+    in bucket 0, which rounding to the nearest millisecond would break.
+    """
+    open_ts = 1786665600
+    df = pd.DataFrame({
+        "ts": [open_ts + 0.1, open_ts + 0.0996, open_ts + 0.2],
+        "bn_spot_mid": [1.0, 2.0, 3.0],
+        "bn_spot_bid_sz": [1.0, 1.0, 1.0],
+        "bn_spot_ask_sz": [1.0, 1.0, 1.0],
+    })
+    out = bucket_venue_l1(df, open_ts).set_index("t_ms")
+    assert out.loc[100, "spot"] == 1.0, "exact 0.1 s must not fall back a bucket"
+    assert out.loc[0, "spot"] == 2.0, "99.6 ms must not be rounded up a bucket"
+    assert out.loc[200, "spot"] == 3.0
