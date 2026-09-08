@@ -12,6 +12,13 @@ SPOT = os.path.join(DATA, "spot_5m_100ms.parquet")
 FAIR_DIR = os.path.join(DATA, "fair")
 INVESTIGATIONS = os.path.join(PROJECT, "investigations")
 
+#: Harness-owned scratch. Everything under `data/` is read-only input to this
+#: harness, so anything the harness generates about a data file -- the cached
+#: input fingerprints, for one -- belongs here and never beside the file it
+#: describes.
+CACHE = os.path.join(HERE, ".cache")
+FINGERPRINTS = os.path.join(CACHE, "fingerprints")
+
 VENUE_L1 = r"Z:\parquet\stream_venue_l1"
 
 H = 300

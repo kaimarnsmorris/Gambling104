@@ -6,6 +6,10 @@ folder IS the override.
 
 A run freezes copies of every block file it used, so the run folder remains a
 complete answer to 'what was this model?' after the investigation moves on.
+
+Fingerprinting a data file writes NOTHING next to that file. `data/` is this
+harness's read-only input; the digest cache lives under `paths.FINGERPRINTS`,
+inside the harness, keyed by the absolute path of the file it describes.
 """
 import hashlib
 import importlib.util
@@ -51,21 +55,45 @@ def sha256_file(path, chunk=1 << 20):
     return h.hexdigest()
 
 
+def _cache_path(path):
+    """Where the cached digest for `path` lives -- in the harness, not in data.
+
+    NOT a sidecar next to the file. `data/` is read-only input from the
+    harness's point of view everywhere else in this project, and a cache is no
+    reason to make an exception of it. The name carries a hash of the absolute
+    path, so two data files sharing a basename cannot collide on one cache
+    entry and hand back each other's digest.
+    """
+    full = os.path.abspath(path)
+    tag = hashlib.sha256(full.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(paths.FINGERPRINTS,
+                        f"{os.path.basename(full)}.{tag}.sha256")
+
+
 def fingerprint_input(path):
-    """Cheap, cached identity for a large data file."""
+    """Cheap, cached identity for a large data file.
+
+    Keyed on (size, mtime), under `paths.FINGERPRINTS`. A miss costs only a
+    re-hash, so a cache that cannot be read or written is never wrong -- which
+    is why both failures are swallowed.
+    """
     if not os.path.exists(path):
         return {"path": path, "present": False}
     stat = os.stat(path)
-    side = f"{path}.sha256"
+    side = _cache_path(path)
     key = f"{stat.st_size}:{int(stat.st_mtime)}"
     digest = None
     if os.path.exists(side):
-        cached_key, cached = open(side).read().split("\n")[:2]
+        try:
+            cached_key, cached = open(side).read().split("\n")[:2]
+        except (OSError, ValueError):
+            cached_key = cached = None
         if cached_key == key:
             digest = cached
     if digest is None:
         digest = sha256_file(path)
         try:
+            os.makedirs(paths.FINGERPRINTS, exist_ok=True)
             open(side, "w").write(f"{key}\n{digest}\n")
         except OSError:
             pass

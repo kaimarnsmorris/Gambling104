@@ -9,6 +9,7 @@ import os
 
 import pytest
 
+from harness import paths
 from harness.core import provenance
 
 
@@ -71,6 +72,51 @@ def test_hashing_a_file_is_stable(tmp_path):
 def test_a_missing_input_is_fingerprinted_as_absent(tmp_path):
     fp = provenance.fingerprint_input(str(tmp_path / "nope.parquet"))
     assert fp["present"] is False
+
+
+def test_fingerprinting_writes_nothing_beside_the_data_file(tmp_path,
+                                                            monkeypatch):
+    """`data/` is read-only input. The digest cache belongs to the harness.
+
+    It used to be a `.sha256` sidecar written next to the parquet, which put
+    harness output inside the one tree this project treats as untouchable.
+    """
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(paths, "FINGERPRINTS", str(cache))
+    data = tmp_path / "data"
+    data.mkdir()
+    parquet = data / "spot_5m_100ms.parquet"
+    parquet.write_bytes(b"x" * 64)
+
+    first = provenance.fingerprint_input(str(parquet))
+    assert [q.name for q in data.iterdir()] == ["spot_5m_100ms.parquet"], (
+        "the harness wrote into the data tree")
+    assert cache.is_dir() and any(cache.iterdir())
+
+    cached = provenance.fingerprint_input(str(parquet))
+    assert cached["sha256"] == first["sha256"]
+    assert first["sha256"] == provenance.sha256_file(str(parquet))
+
+
+def test_two_inputs_sharing_a_basename_do_not_share_a_cache_entry(
+        tmp_path, monkeypatch):
+    """Same name, same size, same mtime -- and different bytes.
+
+    A cache keyed on the basename alone would hand the second file the first
+    one's digest, and the manifest would swear to a file that was never read.
+    """
+    monkeypatch.setattr(paths, "FINGERPRINTS", str(tmp_path / "cache"))
+    digests = []
+    for folder, body in (("a", b"a" * 64), ("b", b"b" * 64)):
+        d = tmp_path / folder
+        d.mkdir()
+        f = d / "panel.parquet"
+        f.write_bytes(body)
+        os.utime(f, (1_786_665_600, 1_786_665_600))
+        fp = provenance.fingerprint_input(str(f))
+        assert fp["sha256"] == provenance.sha256_file(str(f))
+        digests.append(fp["sha256"])
+    assert digests[0] != digests[1]
 
 
 def test_two_runs_of_the_same_config_do_not_collide(tmp_path):
