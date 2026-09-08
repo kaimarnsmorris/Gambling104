@@ -115,6 +115,7 @@ class Window:
             # the step-filled log series is what a settlement actually averages
             self.logc_step = np.log(np.maximum(self.cl_step, 1e-12))
             self.eps_step = _ffill_arr(self.eps)
+            self.eps_alt_step = _ffill_arr(self.eps_alt)
             log("  chainlink: %.4f of seconds carry a mark, %.4f step-filled within %d s"
                 % (self.have_cl.mean(), np.isfinite(self.cl_step).mean(), MAX_STEP_AGE))
 
@@ -151,7 +152,7 @@ class Window:
         for a in ("logp", "logc_step", "spot_ok"):
             if hasattr(self, a):
                 setattr(self, a, None)
-        for a in ("b", "eps", "eps_step", "b_alt", "eps_alt"):
+        for a in ("b", "eps", "eps_step", "b_alt", "eps_alt", "eps_alt_step"):
             if getattr(self, a, None) is not None:
                 setattr(self, a, np.asarray(getattr(self, a), dtype=np.float32))
 
@@ -228,12 +229,18 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
     Lw = int(twap_len)
 
     # The market-observable baseline is the same model on a counterparty's information
-    # set: the received prints and nothing else, so it neither reconstructs an
-    # in-transit print from the exchange feed nor conditions the residual on one -
-    # exactly the two things `information_set` gates below, mirroring the single-quote
-    # path so the two stay checkable against each other (see
-    # tests/test_engine_matches_fairvalue.py).
-    it_q, n_q = it, n
+    # set: the received prints and nothing else. Its most recent price is the print it
+    # received LAG_S seconds ago, so it quotes from that second - everything since,
+    # including the moves the perp feed already shows, is unknown to it. That is the
+    # whole of the difference, and it is what makes the gap "the lag edge" rather than
+    # an arbitrary handicap. The lag is a property of the STATE this counterparty would
+    # be holding, not of the pricing arithmetic - `evaluate` can construct that state
+    # because it has the whole window; `fair_value` is handed a state and structurally
+    # cannot, so the two paths are not comparable on this override by construction (see
+    # tests/test_engine_matches_fairvalue.py::test_prints_only_lags_the_quote).
+    mo = ov.information_set == "prints_only" and kind == "chainlink_twap60"
+    it_q = it - LAG_S if mo else it
+    n_q = n + LAG_S if mo else n
 
     # ---- settlement weights, identical for every market in the cell -----------
     s = settlement_weights(kind, n_q, model.fp.to_dict(), L=Lw)
@@ -242,10 +249,16 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
     if kind == "chainlink_twap60":
         lvl = win.cl_step
         n_recv = int(np.clip(Lw - n - LAG_S, 0, Lw))
-        x_t = win.lxf[it]
-        src = {"main": win.b, "alt": win.b_alt}.get(ov.basis_tracker)
-        b_t = np.zeros(it.size) if src is None else src[it]
-        b_t = np.where(np.isfinite(b_t), b_t, 0.0)
+        if mo:
+            # the counterparty prices off the last print it holds; with no exchange
+            # feed the martingale forecast of every later print is that print
+            x_t = np.log(np.maximum(lvl[it - LAG_S], 1e-12))
+            b_t = np.zeros(it.size)
+        else:
+            x_t = win.lxf[it]
+            src = {"main": win.b, "alt": win.b_alt}.get(ov.basis_tracker)
+            b_t = np.zeros(it.size) if src is None else src[it]
+            b_t = np.where(np.isfinite(b_t), b_t, 0.0)
         p_ref = np.exp(x_t + b_t)
         strike = lvl[iO]
         settle = _window_mean(lvl, iT, Lw)
@@ -270,14 +283,14 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
     # ---- the deterministic carry ---------------------------------------------
     d_bar = np.zeros(it.size)
     n_transit = 0
-    if kind == "chainlink_twap60":
+    if kind == "chainlink_twap60" and not mo:
         lam = model.fp.lam
         j = np.arange(n_comp - n_recv, dtype=np.float64)     # unknown components
         K = n - j - model.fp.delta_s
         fut = K > 0
         n_transit = int((~fut).sum())
         d_bar = (lam ** K[fut]).sum() * (win.F[it] - x_t)
-        if ov.reconstruct_in_transit and ov.information_set == "full" and n_transit:
+        if ov.reconstruct_in_transit and n_transit:
             for jj in j[~fut]:
                 d_bar = d_bar + (win.Fd[iT - int(jj)] - x_t)
         d_bar = d_bar / n_comp / omega
@@ -328,7 +341,12 @@ def evaluate(win: Window, model, kind: str, L: int, n: int,
                         * np.maximum(win.clock.dT_at(it, np.array([1]))[:, 0], 1e-30))
         sig = model.eps.sigma_at(v_loc)
         var_eps = q_unit * sig ** 2
-        eps_last = win.eps_step[it - LAG_S]
+        # d_lvl = b + eps by construction, so selecting b's tracker must select the
+        # matching residual - mixing b_alt's level with the main tracker's residual
+        # would double-count the gap between the two trackers (spec ruling 13)
+        eps_series = {"main": win.eps_step, "alt": win.eps_alt_step,
+                     "off": win.eps_step}.get(ov.basis_tracker, win.eps_step)
+        eps_last = eps_series[it - LAG_S]
         eps_bar = c * np.where(np.isfinite(eps_last), eps_last, 0.0)
         if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
@@ -444,6 +462,8 @@ def state_at(win: "Window", it: int, model) -> "object":
         f.b_alt = float(win.b_alt[it]) if np.isfinite(win.b_alt[it]) else np.nan
         e = win.eps_step[it - LAG_S]
         f.eps_last = float(e) if np.isfinite(e) else 0.0
+        e_alt = win.eps_alt_step[it - LAG_S]
+        f.eps_last_alt = float(e_alt) if np.isfinite(e_alt) else 0.0
         f.eps_last_ts = int(win.ts[it]) - LAG_S
         f.last_print_ts = int(win.ts[it]) - LAG_S
     return FVState(st, f, win_book(win, it))

@@ -231,7 +231,12 @@ def fair_value(state, market: Market, model: FairValueModel,
                 else ("full" if (ov.eps_condition and ov.information_set == "full")
                       else "unconditional"))
         c, var_eps = eps_conditional(model.eps, ages, w, sig, mode)
-        eps_bar = c * state.filt.eps_last
+        # d_lvl = b + eps by construction, so the residual has to come from whichever
+        # tracker supplied the level - mixing b_alt with the main eps would
+        # double-count the gap between the two trackers (spec ruling 13)
+        eps_last = (state.filt.eps_last_alt if ov.basis_tracker == "alt"
+                   else state.filt.eps_last)
+        eps_bar = c * eps_last
         if ov.basis_tracker != "off":
             from .build import basis_drift_window_var
             var_basis = basis_drift_window_var(model, ages, w)

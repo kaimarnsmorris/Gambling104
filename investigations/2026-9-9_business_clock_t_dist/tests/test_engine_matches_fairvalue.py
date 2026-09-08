@@ -69,6 +69,16 @@ def test_batch_equals_single_quote(win_base, ovkw, kind, L, n):
     # w_spot changes the blend, so the window's print-model series must be rebuilt
     if ovkw.get("w_spot") is not None:
         pytest.skip("w_spot needs its own Window; covered by test_w_spot_rebuild")
+    # prints_only changes the INFORMATION SET the batch path constructs a state
+    # from (it quotes off a print received LAG_S seconds ago, with the matching
+    # lag on the variance window) - not the pricing arithmetic. `evaluate` can
+    # build that lagged state because it holds the whole window; `fair_value` is
+    # handed a state and structurally cannot re-derive an earlier one. The two
+    # paths are therefore not comparable on this override by construction; see
+    # test_prints_only_lags_the_quote for what it actually does.
+    if ovkw.get("information_set") == "prints_only":
+        pytest.skip("prints_only changes the batch path's state construction, not "
+                    "the arithmetic; covered by test_prints_only_lags_the_quote")
     model = apply_overrides(base, ov)
 
     T = market_grid(win, L, burn_days=2)
@@ -120,6 +130,80 @@ def test_w_spot_rebuild(win_base):
                      model, t_now=int(win.ts[it]))
     assert one.var_y == pytest.approx(float(cell.rows["var_y"][k]), rel=1e-8)
     assert one.y_star == pytest.approx(float(cell.rows["y_star"][k]), rel=1e-7)
+
+
+def test_prints_only_lags_the_quote(win_base):
+    """`information_set="prints_only"` is the honest no-exchange-feed counterparty:
+    it quotes off the print it received LAG_S seconds ago, with the matching lag on
+    the variance window, and it never carries a deterministic drift term because it
+    has nothing beyond the received prints to extrapolate from. This is the lag edge
+    the shipped `market_observable` variant exists to measure (spec ruling 12), so a
+    restored behaviour needs a test pinning it or it will be deleted again the next
+    time someone notices the scalar path can't reproduce it."""
+    from fvmodel.engine import evaluate, market_grid
+    from fvmodel.overrides import Overrides, apply_overrides
+
+    win, base = win_base
+    kind, L, n = "chainlink_twap60", 300, 60
+    T = market_grid(win, L, burn_days=2)
+    win.prepare(np.unique(np.concatenate([win.i(T) - n, win.i(T) - n - 2,
+                                          win.i(T) - n - 2 - 2])))
+
+    default = evaluate(win, apply_overrides(base, Overrides()), kind, L, n, expiries=T)
+    lagged = evaluate(win, apply_overrides(base, Overrides(information_set="prints_only")),
+                      kind, L, n, expiries=T)
+    common = np.intersect1d(default.rows["T"], lagged.rows["T"])
+    assert common.size > 10
+    i0 = np.searchsorted(default.rows["T"], common)
+    i1 = np.searchsorted(lagged.rows["T"], common)
+
+    assert not np.allclose(default.rows["y_star"][i0], lagged.rows["y_star"][i1])
+    assert not np.allclose(default.rows["var_y"][i0], lagged.rows["var_y"][i1])
+    assert np.all(lagged.rows["carry"][i1] == 0.0)
+
+
+def test_basis_tracker_alt_switches_the_residual_too(win_base):
+    """`d_lvl = b + eps` by construction, so selecting `basis_tracker="alt"` for the
+    level must select the matching residual `eps_alt`, or the two trackers' gap gets
+    double-counted (spec ruling 13). This must fail before that fix: with only the
+    level switched, `eps_bar` is unchanged from the default run because both paths
+    would still be reading the main tracker's residual."""
+    from fvmodel.engine import evaluate, market_grid
+    from fvmodel.overrides import Overrides, apply_overrides
+
+    win, base = win_base
+    kind, L, n = "chainlink_twap60", 300, 60
+    T = market_grid(win, L, burn_days=2)
+    win.prepare(np.unique(np.concatenate([win.i(T) - n, win.i(T) - n - 2])))
+
+    default = evaluate(win, apply_overrides(base, Overrides()), kind, L, n, expiries=T)
+    alt = evaluate(win, apply_overrides(base, Overrides(basis_tracker="alt")),
+                   kind, L, n, expiries=T)
+    common = np.intersect1d(default.rows["T"], alt.rows["T"])
+    assert common.size > 10
+    i0 = np.searchsorted(default.rows["T"], common)
+    i1 = np.searchsorted(alt.rows["T"], common)
+
+    assert not np.allclose(default.rows["eps_bar"][i0], alt.rows["eps_bar"][i1])
+
+
+def test_emit_all_keeps_unpriceable_rows(win_base):
+    """Task 7's export builder needs every market second, priceable or not, so
+    `emit_all=True` must keep the rows the `ok` mask would otherwise drop."""
+    from fvmodel.engine import evaluate, market_grid
+
+    win, model = win_base
+    kind, L, n = "chainlink_twap60", 300, 5
+    T = market_grid(win, L, burn_days=2, step=1)
+    win.prepare(np.unique(np.concatenate([win.i(T) - n, win.i(T) - n - 2])))
+
+    dropped = evaluate(win, model, kind, L, n, expiries=T)
+    kept = evaluate(win, model, kind, L, n, expiries=T, emit_all=True)
+
+    assert "ok" in kept.rows
+    assert len(kept) > len(dropped)
+    assert kept.rows["ok"].any()
+    assert not kept.rows["ok"].all()
 
 
 def test_no_lookahead(win_base):
