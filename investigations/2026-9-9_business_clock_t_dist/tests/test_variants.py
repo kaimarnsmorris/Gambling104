@@ -87,3 +87,32 @@ def test_sweep_generation_does_not_change_the_shipped_variant_list():
     finally:
         for p in written:
             p.unlink(missing_ok=True)
+
+
+def test_the_holdout_log_is_committable():
+    """Spec section 8.1: `runs/holdout_log.tsv` must be COMMITTED - it is the only
+    record that the reserved window was consumed.
+
+    Both this folder's `.gitignore` and the repository root's exclude `runs/`, and
+    git cannot re-include a file whose parent DIRECTORY is excluded, so the
+    negation only works because the local file un-excludes the directory first.
+    That is easy to undo by tidying, hence this test.
+    """
+    import subprocess
+    from pathlib import Path
+
+    inv = Path(__file__).resolve().parents[1]
+    try:
+        ignored = subprocess.run(["git", "check-ignore", "-q", "runs/holdout_log.tsv"],
+                                 cwd=str(inv)).returncode
+        artefact = subprocess.run(["git", "check-ignore", "-q",
+                                   "runs/select/baseline.parquet"],
+                                  cwd=str(inv)).returncode
+    except (OSError, FileNotFoundError):
+        pytest.skip("git not available")
+    assert ignored == 1, ("runs/holdout_log.tsv is gitignored; spec 8.1 requires it "
+                          "be committed")
+    assert artefact == 0, ("the rest of runs/ must stay ignored - only the holdout "
+                           "log is exempt")
+    assert (inv / "runs" / "holdout_log.tsv").exists(), (
+        "the log must exist (header row only until a holdout is actually run)")

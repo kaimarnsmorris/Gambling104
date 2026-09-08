@@ -1,6 +1,16 @@
 cache/
-runs/
 __pycache__/
 *.pyc
 .pytest_cache/
 variants/generated/
+
+# Run outputs are rebuildable and large, so they stay out - EXCEPT the holdout
+# log, which spec section 8.1 requires be committed: it is the only record that
+# the reserved window was consumed. Git cannot re-include a file whose parent
+# DIRECTORY is excluded, and the repository-root .gitignore excludes `**/runs/`,
+# so this has to un-exclude the directory first (`!runs/`), then exclude its
+# contents (`runs/**`), then re-include the one file. Verify any change with
+#     git check-ignore -v runs/holdout_log.tsv runs/select/baseline.parquet
+!runs/
+runs/**
+!runs/holdout_log.tsv
