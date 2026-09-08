@@ -58,6 +58,44 @@ def test_quote_applies_temperature_but_prob_does_not():
     assert abs(warmed_neg - 0.5) < abs(p_model_neg - 0.5)
 
 
+def test_link_without_a_tick_index_fails_with_the_fix_in_the_message():
+    """The harness calls `link(z_i)` with no index (harness/core/loop.py). The
+    tail is per-tick, so there is nothing correct to return - but the failure must
+    name the one-line change that fixes it, not be an argument-count TypeError."""
+    import link
+
+    with pytest.raises(TypeError) as e:
+        link.link(0.5)
+    msg = str(e.value)
+    for want in ("loop.py", "link_i", "getattr(link,", "per tick", "handoff"):
+        assert want.lower() in msg.lower(), "missing %r from the message:\n%s" % (
+            want, msg)
+
+
+def test_link_per_tick_hook_is_reachable_from_the_function_object(monkeypatch):
+    """`harness/core/run.py` does `blocks["link"] = modules["link"].link`, so it
+    holds the FUNCTION, not the module - `.at` has to be findable on it."""
+    import link
+
+    assert link.link.at is link.at and link.link.bind is link.bind
+
+    class _Ep:
+        market_id = "m-test"
+
+    monkeypatch.setattr(link, "for_episode", lambda ep: {
+        "nu": np.array([6.0, 6.0]), "mu": np.array([0.0, 0.5]),
+        "sigma_t": np.array([1.0, 1.0])})
+    monkeypatch.setattr(link, "_read_temperature", lambda: 1.0)
+    monkeypatch.setattr(link, "_read_tail_family", lambda: "t")
+    link._BOUND.clear()
+
+    at0, at1 = link.link.at(_Ep(), 0), link.link.at(_Ep(), 1)
+    assert at0(0.0) == pytest.approx(0.5), "mu = 0 must give a half at z = 0"
+    assert at1(0.0) > at0(0.0), (
+        "the tail parameters must actually differ per tick, or the hook is "
+        "pointless")
+
+
 @pytest.mark.slow
 def test_blocks_reproduce_the_export_probability():
     """f() then link() must give back p_model for the market's own strike.
