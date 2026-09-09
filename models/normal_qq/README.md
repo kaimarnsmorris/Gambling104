@@ -4,7 +4,11 @@ This directory contains the canonical block set for the normal Q-Q distribution 
 
 ## Source and Drift Record
 
-**Files copied from:** `Gambling104/backtesting_5m/investigations/2026-09-09-normal-qq-eval/`
+**Files copied from:** `investigations/2026-09-09-normal-qq-eval/`, which
+has since been deleted along with the rest of the exploratory
+investigations. That folder and `2026-09-09-vol-fixed` live in git history
+only; the drift record below describes what was true when the copy was
+made, and this directory is now the sole home of these four blocks.
 
 **Date copied:** 2026-09-09
 
@@ -21,7 +25,10 @@ At the time of copying to this shared model directory, the four block files were
 
 **Why vol.py diverged:** The `2026-09-09-vol-fixed` investigation layered an experiment on top of this baseline model, replacing `vol.py` with a calibrated lookup-table implementation that reads panel-specific fitted parameters from `sigma_fit.json`. That variant belongs in the investigation that tested it, not in the shared canonical model.
 
-**Resolution order:** The `2026-09-09-vol-fixed` investigation retains its own local `vol.py`, which shadows the model's by design (investigation → model → defaults). This is the intended use of shadowing — forking a single block remains a one-file act.
+**Resolution order:** an investigation's own `vol.py` shadows the model's by
+design (investigation → model → defaults), which is how `2026-09-09-vol-fixed`
+held the calibrated variant without forking the other three blocks. Forking a
+single block is a one-file act.
 
 ## Provenance Freezing
 
