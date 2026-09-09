@@ -9,6 +9,8 @@
 # run outputs
 **/runs/
 **/out/
+# figures an investigation draws from its runs; regenerate with its run.py
+**/cum_pnl.png
 
 # python
 __pycache__/
