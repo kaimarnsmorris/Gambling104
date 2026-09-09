@@ -112,6 +112,31 @@ def _empty():
     return np.zeros(0)
 
 
+class StreamView:
+    """One registered stream's decision-aligned arrays.
+
+    Values are reached as attributes; `age_ms` and `has` always exist. A
+    mistyped column raises immediately and names the real ones, so it fails at
+    the first tick rather than surfacing as NaN deep in a sweep.
+    """
+    __slots__ = ("_name", "_cols")
+
+    def __init__(self, name, cols):
+        self._name = name
+        self._cols = cols
+
+    def __getattr__(self, item):
+        try:
+            return self._cols[item]
+        except KeyError:
+            raise AttributeError(
+                f"stream {self._name!r} has no column {item!r}; "
+                f"it has {tuple(sorted(self._cols))}") from None
+
+    def __repr__(self):
+        return f"StreamView({self._name!r}, {tuple(sorted(self._cols))})"
+
+
 @dataclass(frozen=True)
 class Episode:
     market_id: str
@@ -177,6 +202,16 @@ class Episode:
     warmup_chainlink: np.ndarray = field(default_factory=_empty)
     warmup_chainlink_age_ms: np.ndarray = field(default_factory=_empty)
 
+    #: Decision time of each index, milliseconds since the market open. On the
+    #: 100 ms grid this is exactly i*100. It exists so blocks and the engine ask
+    #: "what time is index i" rather than assuming buckets -- which is what
+    #: makes event replay additive rather than a rewrite.
+    t_ms: np.ndarray = field(
+        default_factory=lambda: np.arange(N_BUCKET, dtype="int64") * BUCKET_MS)
+
+    #: Registered streams: {name: {col: array, "age_ms": array, "has": array}}
+    streams: dict = field(default_factory=dict)
+
     def __len__(self) -> int:
         return N_BUCKET
 
@@ -195,7 +230,15 @@ class Episode:
         return (self.warmup_n - j) * (BUCKET_MS / 1000.0)
 
     def tte_s(self, i: int) -> float:
-        return 300.0 - i * (BUCKET_MS / 1000.0)
+        return 300.0 - self.t_ms[i] / 1000.0
+
+    def stream(self, name):
+        """The decision-aligned arrays of a registered stream."""
+        if name not in self.streams:
+            raise KeyError(
+                f"{name!r} is not on this episode; it has "
+                f"{tuple(sorted(self.streams))}")
+        return StreamView(name, self.streams[name])
 
 
 def shift_to_decision_grid(values, present):
