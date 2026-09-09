@@ -1,5 +1,17 @@
 # vol-fixed — is sigma why the model is badly calibrated?
 
+> **ANSWERED IN PART II — read that first.** On the corrected BTC/USD panel:
+> **fixing sigma DOES fix the calibration** (test Brier 0.1528 -> 0.1398 against
+> the book's 0.1289; saturation 27 % -> 11 % and now settling 0.995 correctly;
+> the repaired curves sit on the diagonal), and it **does NOT change the sign of
+> the PnL** — the loss grows from -$5.85 to -$10.37 per market, because a
+> correctly wide sigma quotes nearer 0.5 and fills 39 % more at an edge that
+> never covered fees. Part I below is the earlier pass on the UNCORRECTED panel
+> and is kept verbatim for the before/after; its deferral is resolved in II.3
+> and two of its conclusions are withdrawn in II.2 and II.4.
+
+# PART I — the uncorrected panel (superseded, kept for comparison)
+
 **Sigma really is far too small — that part of the diagnosis is confirmed by
 measurement, not assumed. Fixing it removes the saturation (31 % of test-day
 observations pinned at p >= 0.999 -> 4 %) and improves Brier from 0.1651 to
@@ -209,3 +221,149 @@ python run.py                # three arms x two halves, results.json + calibrati
 live under `runs/` (gitignored); each arm's `manifest.json` pins the sha256 of
 the four block files that priced it. `python -m pytest harness/tests -q` reports
 168 passed, unchanged — no harness code was touched.
+
+---
+
+# PART II — the corrected BTC/USD panel (appended, nothing above overwritten)
+
+Everything above was measured on `data/spot_5m_100ms.parquet`, which carried a
+~+43 USD BTC/USDT-vs-BTC/USD level bias. That panel has been rebuilt as
+`harness.paths.SPOT_USD` -> `data/spot_5m_100ms_usd.parquet` (`bn_spot_mid`
+less the capture's `usdt_basis`; the oracle gap falls from +43.17, sd 16.36, to
++4.50, sd 7.44). Sigma was **refitted from scratch** on it — the old
+`sigma_fit.json` is preserved as `sigma_fit_uncorrected.json` and was not
+reused — and all three arms re-run. Same calendar split, same unoptimised
+`QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10)`.
+
+## II.0 The split is now clean
+
+Short-tau (tte <= 5 s) forecast bias, the quantity that was a pure basis
+artefact:
+
+| | fit half | test half | fit / test |
+|---|---|---|---|
+| uncorrected panel | -6.51 bp | -1.79 bp | **3.64** |
+| corrected panel | **-0.705 bp** | **-0.459 bp** | **1.535** |
+
+The bias falls by roughly 9x in level and the fit/test asymmetry from 3.6x to
+1.5x. It is not exactly 1, but both halves are now **under 1 bp** — about
+$5-8 at these prices, i.e. inside the sd 7.44 residual the panel rebuild itself
+reports. The remaining 1.5x is a real, small difference between the two halves,
+not a data defect masquerading as one. **The fit/test comparison is finally
+measuring the model.** The fraction of markets with a negative forecast error
+falls from 1.000 (827 of 827) to 0.479-0.889 depending on tau, and the mean
+bias changes sign across the window (-0.73 bp at tau = 30 s, +1.62 bp at 295 s)
+— it now looks like noise, not an offset.
+
+## II.1 Sigma against realised, corrected — the shortfall is real but smaller
+
+`model / realised`, fit days, before and after (`sigma_vs_realised.png` is the
+corrected version; `sigma_vs_realised_uncorrected.png` the old one):
+
+| tau (s) | 0.5 | 5 | 30 | 60 | 90 | 150 | 210 | 270 | 295 |
+|---|---|---|---|---|---|---|---|---|---|
+| uncorrected | 0.000 | 0.009 | 0.130 | 0.328 | 0.435 | 0.476 | 0.430 | 0.285 | 0.121 |
+| **corrected** | 0.002 | 0.065 | **0.603** | 0.665 | **0.678** | 0.612 | 0.497 | 0.317 | 0.133 |
+
+**Yes, the bias was inflating realised moves — but sigma is still too small
+everywhere.** Mid-window the shortfall roughly halves (at tau = 30 s, 0.13 ->
+0.60; at 90 s, 0.44 -> 0.68), so about half the apparent shortfall was the
+basis. The ratio still never reaches 1: it peaks at **0.68** and collapses to
+0.065 by tau = 5 s. The fit-day and test-day ratio curves now lie on top of each
+other, where before they were a factor of two apart.
+
+Two shape findings survive and one reverses:
+
+* **`tau_eff`'s form is still wrong.** Refitting `k * sqrt(tau_eff(tau; w))`
+  with `w` free still drives `w` to the search floor (0.5 s vs the asserted
+  60 s). The free power-law exponent moves from 0.174 to **0.602** — close to
+  plain diffusion — so the corrected term structure is roughly `sqrt(tau)`,
+  which is exactly what `tau_eff`'s aggressive late shrink is not.
+* **The residual floor is the residual basis.** Realised scale still flattens
+  near expiry at ~0.9 bp (~$7), matching the rebuild's own sd-7.44 residual
+  rather than any volatility.
+* **REVERSED — the EWMA does carry conditional information after all.**
+  `corr(log relative sigma, log relative |r|)` goes from **0.0043 to 0.3805**
+  over the same 52,883 fit rows. On the uncorrected panel a large constant bias
+  swamped the per-market variation and made the EWMA look worthless. It is not.
+  See II.4.
+
+## II.2 The three arms, corrected panel — TEST days (3,630 obs, 726 markets)
+
+Book Brier on identical rows: **0.1289**. Old (uncorrected) figures in
+parentheses.
+
+| arm | Brier | p>=0.999 | its realised | worst decile gap | mean p - mean y | c/share | $/market | day-blocked CI | gates |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | 0.1528 (0.1651) | 0.266 (0.310) | 0.924 (0.896) | -0.205 (-0.284) | +0.040 (+0.098) | -1.668 (-1.463) | **-5.853** (-4.156) | [-7.107, -3.364] | all pass |
+| calibrated | **0.1398** (0.1550) | 0.109 (0.040) | 0.995 (0.993) | -0.156 (-0.239) | **+0.020** (+0.047) | -2.128 (-2.174) | **-10.368** (-8.175) | [-11.795, -9.689] | all pass |
+| flat | 0.1414 (0.1581) | 0.083 (0.035) | 0.987 (0.992) | **-0.140** (-0.254) | +0.021 (+0.042) | -2.242 (-2.098) | -11.466 (-7.764) | [-13.647, -9.773] | all pass |
+
+FIT days (4,131 obs, 827 markets; book 0.1367): baseline 0.1573 / sat 0.274 /
+-4.672 $/mkt; calibrated 0.1419 / 0.149 / -7.460; flat 0.1445 / 0.131 / -7.290.
+
+**The two halves now agree.** Baseline Brier is 0.1573 (fit) against 0.1528
+(test), where on the uncorrected panel it was 0.2621 against 0.1651. The
+calibrated arm is 0.1419 in sample against 0.1398 out of sample — it
+generalises, and the earlier "does not transfer, 1.5-3.1x too wide" finding was
+an artefact of the basis being 3.6x larger on the fit half. Withdraw it.
+
+## II.3 Verdict — the question I deferred
+
+**Fixing sigma does fix the calibration. It does not change the sign of the
+PnL; it makes the loss larger.**
+
+*Calibration, fixed.* Test-day Brier 0.1528 -> **0.1398** against the book's
+0.1289: the excess over the book falls from 0.024 to **0.011**. Saturation at
+p >= 0.999 falls from 27 % to 11 % and what remains now settles at **0.995** in
+the money — the pinned bucket is finally telling the truth. The worst decile gap
+falls from -0.205 to -0.156 (flat: -0.140), and the directional bias
+`mean p - mean y` halves, +0.040 -> +0.020. On `calibration_curves.png` the two
+repaired arms sit **on the diagonal**, at least as close to it as the book,
+while the baseline is still visibly shallow. The residual 0.011 Brier gap to the
+book is now **resolution, not calibration**: the book is sharper — better
+informed, not better calibrated.
+
+*PnL, unchanged in sign and worse in size.* -$5.85 -> **-$10.37** per market
+(flat: -$11.47), c/share -1.67 -> -2.13. All three gates pass on all six runs,
+on a negative mean: these are robust losses, not noise. The mechanism is
+mechanical — a correctly wide sigma quotes nearer 0.5, so fills rise 25,471 ->
+35,370 (+39 %), and every extra fill is taken at an edge that does not cover
+fees and adverse selection. **Better calibration is a more efficient way to
+lose.** Calibration was never the binding constraint on profitability under this
+quote policy; the model can be almost as well calibrated as the book and still
+be a losing counterparty to it, because it is less *sharp* and pays the spread
+and the fee for the privilege.
+
+## II.4 Does the EWMA conditioning earn its place?
+
+**Yes in principle, no as `vol_baseline.py` currently spends it — and neither of
+the two repaired arms actually cashes it in.**
+
+* The EWMA carries **real** conditional information: `corr = 0.3805` on the
+  corrected panel, against 0.0043 on the biased one. My earlier "the EWMA
+  measures nothing" conclusion is **withdrawn** — that was the artefact.
+* But `vol_baseline.py` converts that information into a *worse* probability
+  than a constant does: Brier 0.1528 against `flat`'s 0.1414, because its level
+  is wrong by ~1.5x mid-window and by 15x near expiry. Good conditioning at the
+  wrong level loses to no conditioning at the right one.
+* `calibrated` now beats `flat` on both halves — 0.1398 vs 0.1414 on test,
+  0.1419 vs 0.1445 on fit. Small but consistent, where on the uncorrected panel
+  flat was marginally *better*. The measured term structure earns its keep once
+  the basis is out; it did not before.
+* **Honest recommendation:** neither shipped arm is the right block. Both are
+  unconditional, and a corr of 0.38 is too much information to leave on the
+  floor. Build next the EWMA's *shape* rescaled to the empirical *level* — keep
+  the per-market conditioning, discard `tau_eff` and the annualise/de-annualise
+  scaling, pin the level to `sigma_fit.json`'s term structure. Until that is
+  measured, a constant sigma at the right level is the honest baseline, and it
+  already beats what ships today.
+
+## II.5 What did NOT change
+
+Every standing caveat in section 5 holds unaltered: the 100 ms grid flatters by
+~$0.13/market, maker fills are modelled and not measured, the venue-to-panel
+clock offset is a configured 0.0 s (plausible band 0-74 ms), and this is six
+days of one instrument with three days per half. The corrected panel removes a
+level bias; it does not make any of those go away, and the PnL conclusion in
+particular still rests on a modelled fill.

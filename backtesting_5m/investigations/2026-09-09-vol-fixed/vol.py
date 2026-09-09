@@ -26,10 +26,14 @@ everything else.
 
 THE FLOOR IS THE POINT. Below the shortest tabulated bucket sigma is HELD, not
 extrapolated. The realised error does not vanish as tau -> 0: it settles onto a
-floor of about 7 bp, because the market settles on a Chainlink TWAP while this
-model watches a venue composite, and the two carry a persistent basis that no
-amount of elapsed time removes. Extrapolating a decaying term structure through
-that floor is precisely the bug being fixed, so the block refuses to do it.
+floor of about 0.9 bp, roughly $7, because the market settles on a Chainlink
+TWAP while this model watches a venue composite, and the residual basis between
+them does not shrink with elapsed time. Extrapolating a decaying term structure
+through that floor is precisely the bug being fixed, so the block refuses to do
+it. (On the ORIGINAL, uncorrected BTC/USDT panel this floor read ~7 bp, eight
+times larger, because it was dominated by a ~+43 USD level bias in the spot
+build rather than by anything the market did. The table is panel-conditional:
+refit it whenever the panel is rebuilt.)
 
 WARM-UP IS PRESERVED DELIBERATELY. This sigma needs no spot history -- it is
 unconditional in tau. It nonetheless returns NaN until MIN_UPDATES distinct
@@ -38,12 +42,21 @@ blocks decline to quote on the same indices. The variable under test is the
 LEVEL of sigma; leaving the quoting window free to move as well would confound
 them.
 
-WHAT THIS BLOCK CANNOT FIX, and the report must not pretend otherwise: r has a
-mean of about -5.6 bp at every tau, negative on 827 of 827 fit markets. That is
-a level bias in `fair.py`, not a scale error, and a vol block can only widen
-around it, never move it. The tabulated sigma is a mean-absolute scale, so it
-does absorb the bias into its magnitude -- which is the conservative thing to
-do when the bias cannot be removed, and is not the same as removing it.
+WHAT THIS BLOCK CANNOT FIX, and the report must not pretend otherwise: it can
+only widen around a level error, never move it. On the corrected BTC/USD panel
+the residual bias is small (-0.71 bp on the fit half) and changes sign across
+the window, so there is little left to absorb; on the uncorrected panel it was
+-5.6 bp at every tau and negative on 827 of 827 markets, and this block's
+mean-absolute scale silently swallowed it into sigma's magnitude. That was the
+conservative thing to do with a bias that could not be removed, and it was not
+the same as removing it. If a persistent bias ever returns, it belongs in
+`fair.py` as a drift term, not here as extra width.
+
+WHAT THIS BLOCK LEAVES ON THE TABLE: it is unconditional in tau, and the
+baseline's EWMA -- worthless-looking at corr 0.0043 on the biased panel -- is
+worth corr 0.3805 on the corrected one. A block that kept that per-market
+conditioning and pinned its LEVEL to this table should beat both this and
+`vol_flat.py`. It has not been built or measured, so it is not claimed.
 """
 import bisect
 import json

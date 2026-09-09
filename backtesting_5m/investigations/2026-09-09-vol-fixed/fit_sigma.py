@@ -63,8 +63,21 @@ from harness import paths                                  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(HERE, "runs", "cache")
-OBS_PARQUET = os.path.join(CACHE_DIR, "sigma_obs.parquet")
-FIT_JSON = os.path.join(HERE, "sigma_fit.json")
+
+#: WHICH SPOT PANEL. `usd` is `harness.paths.SPOT_USD`, the corrected build:
+#: BTC/USDT mid LESS the capture's `usdt_basis`, i.e. a genuine BTC/USD level
+#: against a market that settles on Chainlink's BTC/USD TWAP. `usdt` is the
+#: original `harness.paths.SPOT`, kept runnable only so the before/after in
+#: REPORT.md can be reproduced -- it carries a ~+43 USD level bias and nothing
+#: fitted on it is valid.
+PANELS = {
+    "usd": ("SPOT_USD", "sigma_fit.json", "sigma_obs_usd.parquet",
+            "sigma_vs_realised.png"),
+    "usdt": ("SPOT", "sigma_fit_uncorrected.json",
+             "sigma_obs_uncorrected.parquet",
+             "sigma_vs_realised_uncorrected.png"),
+}
+PANEL = "usd"                   # set by main() from --panel
 
 FIT_DAYS = ("2026-08-19", "2026-08-20", "2026-08-21")
 TEST_DAYS = ("2026-08-22", "2026-08-23", "2026-08-24")
@@ -77,16 +90,23 @@ SPOT_DAYS = FIT_DAYS + TEST_DAYS
 GRID = tuple(range(0, 2951, 50)) + (2960, 2970, 2980, 2990, 2995)
 
 
+def _paths():
+    spot_attr, fit_name, obs_name, plot_name = PANELS[PANEL]
+    return (getattr(paths, spot_attr), os.path.join(HERE, fit_name),
+            os.path.join(CACHE_DIR, obs_name), os.path.join(HERE, plot_name))
+
+
 def observations(days=SPOT_DAYS, rebuild=False):
     """One row per (market, decision index): model sigma and realised r."""
-    if os.path.exists(OBS_PARQUET) and not rebuild:
-        return read_parquet(OBS_PARQUET)
+    spot_path, _, obs_parquet, _ = _paths()
+    if os.path.exists(obs_parquet) and not rebuild:
+        return read_parquet(obs_parquet)
 
     res = provenance.resolve_slots(HERE)
     fair = provenance.load_slot(res["fair"], "fair")
     base = provenance.load_slot(os.path.join(HERE, "vol_baseline.py"), "vol")
 
-    eps = load_episodes(spot_path=paths.SPOT, days=days)
+    eps = load_episodes(spot_path=spot_path, days=days)
     eps = [e for e in eps if e.has_spot.any() and e.settle is not None]
     print(f"episodes with spot and a settlement: {len(eps)}", flush=True)
 
@@ -105,8 +125,8 @@ def observations(days=SPOT_DAYS, rebuild=False):
     obs = pd.DataFrame(rows, columns=["market_id", "day", "tte", "s",
                                       "sigma_model", "settle", "r"])
     os.makedirs(CACHE_DIR, exist_ok=True)
-    obs.to_parquet(OBS_PARQUET, index=False)
-    print(f"wrote {len(obs)} observations -> {OBS_PARQUET}", flush=True)
+    obs.to_parquet(obs_parquet, index=False)
+    print(f"wrote {len(obs)} observations -> {obs_parquet}", flush=True)
     return obs
 
 
@@ -179,6 +199,15 @@ def free_window(tab):
 
 
 def main():
+    global PANEL
+    for arg in sys.argv[1:]:
+        if arg.startswith("--panel="):
+            PANEL = arg.split("=", 1)[1]
+    if PANEL not in PANELS:
+        raise SystemExit(f"--panel must be one of {sorted(PANELS)}")
+    spot_path, fit_json, _, plot_path = _paths()
+    print(f"panel: {PANEL}  ({os.path.basename(spot_path)})")
+
     rebuild = "--rebuild" in sys.argv
     obs = observations(rebuild=rebuild)
     obs = obs[np.isfinite(obs["r"])]
@@ -226,8 +255,23 @@ def main():
           f"across tau; fraction negative {frac_neg.min():.3f} .. "
           f"{frac_neg.max():.3f}")
 
+    # Is the calendar split finally clean? On the uncorrected panel the
+    # short-tau bias was 3.6x larger on the fit half than the test half, which
+    # made any fit/test comparison a comparison of two data defects.
+    near = fit_obs[fit_obs["tte"] <= 5.0]["r"]
+    near_t = test_obs[test_obs["tte"] <= 5.0]["r"]
+    bias_fit, bias_test = float(near.mean()), float(near_t.mean())
+    ratio = bias_fit / bias_test if bias_test else float("nan")
+    print(f"short-tau (tte<=5s) bias  fit {bias_fit*1e4:+.3f} bp  "
+          f"test {bias_test*1e4:+.3f} bp  ratio {ratio:.3f}")
+
     fit = {
         "generated_by": "fit_sigma.py",
+        "panel": PANEL,
+        "spot_path": spot_path,
+        "bias_short_tau_fit": bias_fit,
+        "bias_short_tau_test": bias_test,
+        "bias_fit_over_test": ratio,
         "fit_days": list(FIT_DAYS),
         "test_days": list(TEST_DAYS),
         "estimator": "sqrt(pi/2) * mean|ln(settle / fair_s)| per tte bucket",
@@ -245,13 +289,12 @@ def main():
         "bias_frac_negative_by_tte": {str(float(t)): float(v)
                                       for t, v in frac_neg.items()},
     }
-    with open(FIT_JSON, "w") as fh:
+    with open(fit_json, "w") as fh:
         json.dump(fit, fh, indent=2)
-    print(f"\nwrote {FIT_JSON}")
+    print(f"\nwrote {fit_json}")
 
-    plot_sigma(fit_tab, test_tab, pl, fl,
-               os.path.join(HERE, "sigma_vs_realised.png"))
-    print("wrote sigma_vs_realised.png")
+    plot_sigma(fit_tab, test_tab, pl, fl, plot_path)
+    print(f"wrote {os.path.basename(plot_path)}")
 
 
 def plot_sigma(fit_tab, test_tab, pl, fl, path):
@@ -274,7 +317,7 @@ def plot_sigma(fit_tab, test_tab, pl, fl, path):
     ax[0].set_yscale("log")
     ax[0].set_xlabel("time to expiry tau (s)")
     ax[0].set_ylabel("sigma_T  (sd of ln(A_T / s_t))")
-    ax[0].set_title("Model sigma against realised movement")
+    ax[0].set_title(f"Model sigma against realised movement ({PANEL} panel)")
     ax[0].grid(alpha=0.3, which="both")
     ax[0].legend(fontsize=7.5, loc="upper left")
 

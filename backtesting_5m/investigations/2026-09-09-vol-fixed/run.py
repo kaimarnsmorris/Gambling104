@@ -60,7 +60,18 @@ ARMS = {"baseline": "vol_baseline.py",
 QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 SEEDS = (0, 1, 2)
 
-INPUTS = (paths.PANEL, paths.STRIKES, paths.SPOT)
+#: THE CORRECTED PANEL. `paths.SPOT_USD` is BTC/USDT mid LESS the capture's
+#: `usdt_basis`, i.e. a real BTC/USD level against a market that settles on
+#: Chainlink's BTC/USD TWAP. The original `paths.SPOT` carries a ~+43 USD
+#: level bias which, measured from this end, put the settling value below the
+#: model's forecast on 827 of 827 fit-day markets. Everything in
+#: `*_uncorrected.*` was measured on that panel and is kept only so the
+#: before/after in REPORT.md reproduces.
+SPOT_PATH = paths.SPOT_USD
+RESULTS_JSON = "results.json"
+CURVES_PNG = "calibration_curves.png"
+
+INPUTS = (paths.PANEL, paths.STRIKES, SPOT_PATH)
 
 
 def materialise(arm, vol_file):
@@ -80,7 +91,7 @@ def materialise(arm, vol_file):
 
 def main():
     t0 = time.time()
-    episodes = load_episodes(spot_path=paths.SPOT, days=SPOT_DAYS)
+    episodes = load_episodes(spot_path=SPOT_PATH, days=SPOT_DAYS)
     print(f"loaded {len(episodes)} episodes in {time.time()-t0:.1f}s",
           flush=True)
 
@@ -133,12 +144,12 @@ def main():
                 "run_dir": res["run_dir"],
             }
 
-    with open(os.path.join(HERE, "results.json"), "w") as fh:
+    with open(os.path.join(HERE, RESULTS_JSON), "w") as fh:
         json.dump(results, fh, indent=2, default=str)
-    print(f"\nwrote results.json; total {time.time()-t0:.1f}s")
+    print(f"\nwrote {RESULTS_JSON}; total {time.time()-t0:.1f}s")
 
-    plot_calibration(curves, os.path.join(HERE, "calibration_curves.png"))
-    print("wrote calibration_curves.png")
+    plot_calibration(curves, os.path.join(HERE, CURVES_PNG))
+    print(f"wrote {CURVES_PNG}")
     summarise(results)
 
 
@@ -160,7 +171,7 @@ def plot_calibration(curves, path):
     ax.set_xlabel("predicted P(up), decile mean")
     ax.set_ylabel("realised frequency")
     ax.set_title("Unconditional calibration, TEST days (08-22..24)\n"
-                 "uncorrected spot panel -- carries a known +$43 USDT-basis bias",
+                 "corrected BTC/USD panel (spot_5m_100ms_usd.parquet)",
                  fontsize=10)
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8.5, loc="upper left")
