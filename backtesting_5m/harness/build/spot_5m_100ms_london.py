@@ -19,7 +19,7 @@ consumer that assumes the correction exists. The omission is the warning.
 
 A BASIS-LEARNING FAIR BLOCK IS THEREFORE REQUIRED, not optional. Only a model
 that estimates the venue-to-oracle gap itself can price off this panel. The
-one in `investigations/2026-09-09-normal-qq-eval/fair.py` does exactly that --
+one in `models/normal_qq/fair.py` does exactly that --
 
     S_t = M_t - B_t,   B_t = ewm(M - C),   C = the Chainlink BTC/USD oracle
 

@@ -420,15 +420,23 @@ are simply not paid, so a backtest that books them overstates maker economics.
 `ExecConfig.apply_daily_minimum` (default `False`) turns it on; `run()` then
 passes the fill ledger through the resolved fees block's
 `apply_daily_minimum(ledger, minimum_usd=1.0)`, which zeroes `fee_usd` on the
-maker rows of any `day` whose total maker rebate fell short of the floor. The
-choice is stamped either way into
+maker rows of any `(day, seed)` whose total maker rebate fell short of the
+floor -- grouping on `day` alone would pool every seed's replay of the same
+day, inflating apparent earnings by roughly the seed count and erasing exactly
+the dust days the rule exists to catch. (A ledger without a `seed` column
+groups on `day` alone.) The choice is stamped either way into
 `summary["caveats"]["daily_rebate_minimum_applied"]`. Separation was perfect
 over 131 earn-days: smallest paid $1.0359, largest skipped $0.7209.
 
-**It rewrites `ledger.parquet` only.** `markets.parquet`, the headline and the
-gates are computed per episode *before* the adjustment, so with the flag on the
-withheld dust shows up in the ledger and not in the PnL rollup. Read the two
-together, or re-aggregate from the ledger.
+**It propagates to everything, not just `ledger.parquet`.** `run()` passes the
+withheld delta through to `markets.parquet` as well: `_withhold_daily_minimum`
+(`harness/core/run.py`) diffs the adjusted ledger against the original per
+`(market_id, seed)`, then adds that delta to `markets["fees"]` and subtracts it
+from `markets["pnl_net"]` before the headline, the gates and `per_seed` are
+computed. So `ledger.parquet` and `markets.parquet` already agree, and the
+headline already reflects the withheld dust -- **do not re-aggregate the
+headline from the ledger**; doing so on top of an already-adjusted
+`markets.parquet` withholds the dust twice.
 
 ---
 
