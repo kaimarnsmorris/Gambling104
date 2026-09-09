@@ -14,10 +14,16 @@ import numpy as np                      # noqa: E402
 import pandas as pd                     # noqa: E402
 
 from harness.blocks.defaults.fees import Liquidity
+from harness.core.types import Side
 
 #: Imported from the enum, never hardcoded -- a hardcoded `1` here once
 #: matched `Liquidity.TAKER`, silently swapping every maker/taker split.
 LIQ_MAKER = int(Liquidity.MAKER)
+
+#: Same rule, same reason. `Side` is BUY=1, SELL=-1, so the obvious guess of
+#: 0-and-1 labels every buy a sell and draws no buys at all -- which is
+#: exactly what a first draft of `market_detail` did.
+SIDE_BUY, SIDE_SELL = int(Side.BUY), int(Side.SELL)
 
 
 def cumulative_pnl(markets, path, *, gross=True, title="Cumulative PnL"):
@@ -173,6 +179,92 @@ def calibration(ledgers, markets, path, n_buckets=10):
     ax.set_ylabel("realised settlement frequency")
     ax.set_title("Calibration: fills, maker+taker pooled, per run")
     ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
+def market_detail(ticks, ledger, market_id, path, *, title=None):
+    """One market, tick by tick: quotes against the book, BTC space, inventory.
+
+    The generic half of the per-run detail set. Three stacked panels sharing
+    a time axis, because the question "why did this trade" is never answered
+    in one space:
+
+    * PROBABILITY -- the book's bid and ask, our retreated `eff_bid`/`eff_ask`
+      against them, `fair_p`, and every fill marked at its own price. Where a
+      quote sits outside the book we were never going to trade; where it sits
+      inside, the fill is the interesting one.
+    * BTC -- the venue mid we quote off, the Chainlink oracle that settles the
+      market, and `s`, the model's estimate of where that oracle lands. The
+      gap between `spot` and `chainlink` is the USDT basis the fair block is
+      learning, and it is worth seeing that it learned it.
+    * INVENTORY -- position and mark-to-market PnL. A retreat parameter is a
+      claim about inventory, so the position path is how you check it.
+
+    `ticks` and `ledger` are frames as `load_ticks`/`load_ledgers` return
+    them, filtered here to one market and one run.
+    """
+    t = ticks[ticks["market_id"] == market_id].sort_values("t_ms")
+    if not len(t):
+        raise ValueError(
+            f"no ticks for market {market_id!r}. Ticks are written only for "
+            "runs made with Output(emit_ticks=True) and only for the markets "
+            "named in tick_markets=.")
+
+    # Every seed replays the SAME market, so a multi-seed run holds one row
+    # per (market, t_ms, seed). Overlaying them would draw three inventory
+    # paths on one axis and look like noise in the model rather than a
+    # choice about latency draws. Take the lowest seed and say which.
+    f = (ledger[ledger["market_id"] == market_id]
+         if len(ledger) else ledger.iloc[:0])
+    seed = None
+    if "seed" in t and t["seed"].nunique() > 1:
+        seed = int(t["seed"].min())
+        t = t[t["seed"] == seed]
+        if len(f) and "seed" in f:
+            f = f[f["seed"] == seed]
+    secs = t["t_ms"].to_numpy() / 1000.0
+
+    fig, (ax, axb, axq) = plt.subplots(
+        3, 1, figsize=(11, 8.5), sharex=True,
+        gridspec_kw={"height_ratios": [3, 2, 1.6]})
+
+    ax.plot(secs, t["book_bid"], lw=0.9, color="0.55", label="book bid")
+    ax.plot(secs, t["book_ask"], lw=0.9, color="0.75", label="book ask")
+    ax.plot(secs, t["eff_bid"], lw=1.1, color="tab:blue", label="eff_bid")
+    ax.plot(secs, t["eff_ask"], lw=1.1, color="tab:red", label="eff_ask")
+    ax.plot(secs, t["fair_p"], lw=1.2, color="tab:green", label="fair_p")
+    for side, marker, colour, name in ((SIDE_BUY, "^", "tab:blue", "buy"),
+                                       (SIDE_SELL, "v", "tab:red", "sell")):
+        s = f[f["side"] == side] if len(f) else f
+        if len(s):
+            ax.scatter(s["t_ms"] / 1000.0, s["price"], s=26, marker=marker,
+                       color=colour, edgecolor="k", linewidth=0.4, zorder=5,
+                       label=f"{name} ({len(s)})")
+    ax.set_ylabel("probability")
+    ax.legend(fontsize=7, ncol=4, loc="best")
+    head = title or f"market {market_id}"
+    ax.set_title(f"{head}  (seed {seed})" if seed is not None else head)
+
+    axb.plot(secs, t["spot"], lw=1.0, color="tab:orange", label="venue spot")
+    if "chainlink" in t and t["chainlink"].notna().any():
+        axb.plot(secs, t["chainlink"], lw=1.0, color="tab:purple",
+                 label="chainlink")
+    axb.plot(secs, t["s"], lw=1.2, color="tab:green", label="s (fair BTC)")
+    axb.set_ylabel("BTC, USD")
+    axb.legend(fontsize=7, ncol=3)
+
+    axq.plot(secs, t["q"], lw=1.1, color="k", label="position")
+    axq.axhline(0.0, color="0.6", lw=0.8)
+    axq.set_ylabel("position")
+    axq.set_xlabel("seconds since open")
+    pnl = axq.twinx()
+    pnl.plot(secs, t["cum_pnl"], lw=1.0, color="tab:brown", label="MTM PnL")
+    pnl.set_ylabel("MTM PnL, USD")
+    lines = axq.get_lines()[:1] + pnl.get_lines()
+    axq.legend(lines, [ln.get_label() for ln in lines], fontsize=7)
+
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)

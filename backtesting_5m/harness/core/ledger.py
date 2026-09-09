@@ -71,14 +71,24 @@ class Ledger:
         })
 
     def record_tick(self, ep, i, s_i, sigma_i, z_i, fair_p, eff_bid, eff_ask,
-                    q, cash, cum_pnl, orders_live):
+                    q, cash, cum_pnl, orders_live, seed):
         self.ticks.append({
-            "market_id": ep.market_id, "t_ms": i * 100,
+            # `seed` for the same reason a fill carries it: every seed
+            # replays the SAME market, so without it a multi-seed run's
+            # ticks.parquet holds several rows per (market_id, t_ms) with
+            # nothing to tell them apart, and any per-market plot silently
+            # overlays three paths.
+            "market_id": ep.market_id, "seed": seed, "t_ms": i * 100,
             "s": s_i, "sigma": sigma_i, "z": z_i, "fair_p": fair_p,
             "eff_bid": eff_bid, "eff_ask": eff_ask,
             "book_bid": float(ep.bid[i]), "book_ask": float(ep.ask[i]),
             "mid": float(ep.mid[i]), "book_age_ms": float(ep.book_age_ms[i]),
+            # BTC space, so a market can be read in the units the model
+            # actually forecasts: the venue mid it sees, the oracle it is
+            # forecasting, and `s`, its own estimate of where that oracle
+            # will settle. `chainlink` is NaN where no oracle was loaded.
             "spot": float(ep.spot[i]),
+            "chainlink": float(ep.chainlink[i]),
             "q": q, "cash": cash, "cum_pnl": cum_pnl,
             "orders_live": orders_live,
         })

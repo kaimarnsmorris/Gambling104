@@ -128,7 +128,7 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
                                eff_bid, eff_ask, q, cash,
                                cash + q * float(ep.mid[i])
                                if np.isfinite(ep.mid[i]) else cash,
-                               len(live))
+                               len(live), seed)
 
     # --- settlement --------------------------------------------------------
     if ep.winner_up is None:

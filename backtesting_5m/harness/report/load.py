@@ -41,3 +41,15 @@ def load_summaries(mapping):
         with open(os.path.join(run_dir, "summary.json")) as fh:
             out[label] = json.load(fh)
     return out
+
+
+def load_ticks(mapping):
+    """Per-tick rows for each run, tagged with a `run` column.
+
+    Only present for runs made with `Output(emit_ticks=True)`, and only for
+    the markets named in `tick_markets` -- a full day is ~3,000 rows per
+    market, so an unrestricted tick dump is not what you want. Runs without
+    the file are skipped rather than raising, so a mapping can mix runs that
+    emitted ticks with runs that did not.
+    """
+    return _tidy(mapping, "ticks.parquet")
