@@ -5,12 +5,23 @@ market opening at open_ts + 300, which is why open_ts is carried on the panel.
 Verified exact on all 7,330 testable back-to-back pairs; winner_up is
 settle >= strike, with ties going Up.
 """
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
 from harness import paths
 from harness.core.episode import DEFAULT_WARMUP_S, build_episode
 from harness.io import read_parquet
+from harness.streams import RESERVED, resolve
+from harness.streams.reader import grid_stream
+
+# Converts an epoch-second window bound into a registered stream's own time
+# unit. `grid_stream` requires an absolute epoch time column, but that column
+# need not be nanoseconds -- assuming ns here would make a millisecond-stamped
+# stream's window bounds three orders of magnitude too large and silently
+# select nothing.
+_UNITS_PER_S = {"ns": 1_000_000_000, "us": 1_000_000, "ms": 1_000, "s": 1}
 
 
 def load_chainlink(rtds_path=None):
@@ -118,7 +129,7 @@ def settlement_map(strikes):
 def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
                   fair_path=None, days=None, markets=None, max_markets=None,
                   fair_is_causal=False, rtds_path=None,
-                  warmup=False, warmup_s=DEFAULT_WARMUP_S):
+                  warmup=False, warmup_s=DEFAULT_WARMUP_S, streams=()):
     """Build Episodes from the panel, the strikes and (optionally) spot/fair.
 
     `fair_is_causal` is forwarded to `build_episode`: leave it False unless the
@@ -195,14 +206,14 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
         spot_cols = ["t_ms", "spot"]
         if "spot_usdt" in spot.columns:
             spot_cols.append("spot_usdt")
-        if warmup_s > 0:
-            # One pass to index the panel by market, rather than one full
-            # scan per prior market per episode. Group order is the frame's
-            # own row order, so the frames handed to `build_episode` are the
-            # same rows in the same order the boolean mask below produces.
-            spot_by_open = {int(k): v for k, v in
-                            spot[spot_cols + ["open_ts"]].groupby(
-                                "open_ts", sort=False)}
+        # Group ONCE. The previous per-market lookup below did a full boolean
+        # scan of the spot frame for every market -- O(markets x rows) over a
+        # 4.6 M-row frame. Group order is the frame's own row order, so the
+        # frames handed to `build_episode` are the same rows in the same
+        # order the boolean mask used to produce.
+        spot_by_open = {int(k): v for k, v in
+                        spot[spot_cols + ["open_ts"]].groupby(
+                            "open_ts", sort=False)}
     cl_recv = cl_px = None
     if rtds_path:
         cl_recv, cl_px = load_chainlink(rtds_path)
@@ -220,14 +231,27 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
 
     strike_by_id = dict(zip(strikes["market_id"], strikes["strike"]))
 
+    stream_frames = {}
+    for name in streams:
+        reg = resolve(name)
+        if reg.pre_gridded:
+            # Already keyed on (open_ts, t_ms) and already on the decision
+            # grid. Routing it through grid_stream would treat t_ms as an
+            # absolute epoch and drop every row. Skip: load_episodes reads
+            # these panels by its existing path.
+            continue
+        stream_frames[name] = (reg, read_parquet(reg.path))
+
     episodes = []
     for (market_id, open_ts), obs in panel.groupby(["market_id", "open_ts"],
                                                    sort=True):
         if market_id not in strike_by_id:
             continue
         ep_spot = None
-        if spot is not None:
-            ep_spot = spot[spot["open_ts"] == open_ts][spot_cols]
+        if spot_by_open is not None:
+            rows = spot_by_open.get(int(open_ts))
+            ep_spot = (rows[spot_cols] if rows is not None
+                      else spot.iloc[0:0][spot_cols])
         ep_cl = None
         if cl_recv is not None:
             ep_cl = chainlink_window(cl_recv, cl_px, int(open_ts))
@@ -251,7 +275,7 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
             keep = (k >= 0) & (k < paths.N_BUCKET)
             ep_s[k[keep]] = rows["s"].to_numpy()[keep]
 
-        episodes.append(build_episode(
+        ep = build_episode(
             market_id=market_id, open_ts=int(open_ts),
             day=obs["day"].iloc[0],
             strike=strike_by_id[market_id],
@@ -259,7 +283,26 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
             obs=obs, spot=ep_spot, s=ep_s,
             fair_is_causal=fair_is_causal, chainlink=ep_cl,
             warmup_spot=wu_spot, warmup_chainlink=wu_cl,
-            warmup_s=warmup_s, has_warmup=has_warmup))
+            warmup_s=warmup_s, has_warmup=has_warmup)
+
+        if stream_frames:
+            window = {}
+            for name, (reg, df) in stream_frames.items():
+                # Bounds are converted using the STREAM'S OWN time unit --
+                # not assumed to be nanoseconds -- so a millisecond-stamped
+                # stream does not silently select nothing.
+                to_unit = _UNITS_PER_S[reg.time_unit]
+                lo = int(open_ts) * to_unit
+                hi = (int(open_ts) + paths.H) * to_unit
+                sub = df[(df[reg.time_col] >= lo) & (df[reg.time_col] < hi)]
+                window[name] = grid_stream(
+                    sub, int(open_ts), reg.values or
+                    tuple(c for c in sub.columns if c not in RESERVED),
+                    time_col=reg.time_col, time_unit=reg.time_unit,
+                    causal=reg.causal)
+            ep = replace(ep, streams=window)
+
+        episodes.append(ep)
 
         if max_markets is not None and len(episodes) >= max_markets:
             break
