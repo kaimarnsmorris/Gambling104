@@ -44,7 +44,11 @@ def install():
         time_kind=TimeKind.RECEIPT, time_unit="ns", causal=True))
 
     #: BTC/USD. The default. Venue mid less the capture's usdt_basis; sits
-    #: +$4.50 (sd 7.44) against the Chainlink oracle, versus +$43.17 raw.
+    #: +$4.50 (sd 7.44) against the Chainlink oracle, versus +$43.17 (sd
+    #: 16.36) raw. The raw bias was also time-varying -- day means drifting
+    #: from roughly $40 to roughly $10 -- which is why no fitted intercept
+    #: could ever have absorbed it; the panel had to be rebuilt, not
+    #: regressed away.
     register("spot_usd", paths.SPOT, adapter=_spot_adapter("spot_usd"))
 
     #: BTC/USD, rebuilt over the oracle overlap 2026-08-17..08-21 so a
@@ -61,6 +65,10 @@ def install():
              adapter=_spot_adapter("spot_london_usdt"))
 
     #: Superseded BTC/USDT panel. Registered only so a historical run folder
-    #: can be reproduced against the data it actually used. Do not build on it.
+    #: can be reproduced against the data it actually used. Do not build on
+    #: it. Its bias against the Chainlink oracle was +$43.17 (sd 16.36) --
+    #: versus +$4.50 (sd 7.44) on the corrected panel -- and time-varying
+    #: (day means roughly $40 to roughly $10), which is why it had to be
+    #: rebuilt rather than regressed away.
     register("spot_legacy_usdt", paths.SPOT_LEGACY_USDT,
              adapter=_spot_adapter("spot_legacy_usdt"))

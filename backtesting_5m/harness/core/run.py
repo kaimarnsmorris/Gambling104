@@ -143,10 +143,6 @@ def select_episodes(episodes, sample):
     return out, dropped
 
 
-def _select(episodes, sample):
-    return select_episodes(episodes, sample)[0]
-
-
 def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
         model_dir=None, streams=()):
     """Replay one configuration. `inputs` is the data files this run read.
@@ -215,6 +211,8 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
 
     markets = pd.concat(all_markets, ignore_index=True)
     ledger = pd.DataFrame(all_fills)
+    if execn.apply_daily_minimum:
+        ledger = modules["fees"].apply_daily_minimum(ledger)
 
     # An empty `selected` (every episode dropped by `sample`) leaves each
     # per-seed frame with no columns at all, so indexing by "seed" would
@@ -237,6 +235,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
                 "No depth, no trade tape, no queue exists in this data. Any "
                 "maker number is conditional on the fill block and must be "
                 "reported as a range across fill optimism.",
+            "daily_rebate_minimum_applied": bool(execn.apply_daily_minimum),
             **_clock_offset_caveat(sorted({ep.day for ep in selected})),
         },
     }

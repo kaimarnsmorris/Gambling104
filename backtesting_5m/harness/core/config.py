@@ -50,6 +50,11 @@ class ExecConfig:
     min_tte_s: float = 0.0
     max_tte_s: float = 300.0
     fill_params: dict = field(default_factory=dict)
+    #: Apply the venue's $1.00/day per-stream minimum maker-rebate payout.
+    #: Measured with perfect separation over 131 earn-days: smallest paid
+    #: $1.0359, largest skipped $0.7209. Off by default because it changes the
+    #: headline; when on, the caveats say so.
+    apply_daily_minimum: bool = False
 
 
 @dataclass(frozen=True)

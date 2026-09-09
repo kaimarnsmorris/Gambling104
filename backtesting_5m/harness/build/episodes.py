@@ -218,8 +218,13 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
     if rtds_path:
         cl_recv, cl_px = load_chainlink(rtds_path)
     fair = None
+    fair_by_market = None
     if fair_path:
         fair = read_parquet(fair_path)
+        # Group once, mirroring the spot fix above -- including `sort=False`
+        # for the same reason.
+        fair_by_market = {k: v for k, v in
+                          fair.groupby("market_id", sort=False)}
 
     # The earliest open for which any history could exist at all. Anything
     # whose warm-up region starts before this has no prior data, as opposed
@@ -269,11 +274,13 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
                                          warmup_s)
         ep_s = None
         if fair is not None:
-            rows = fair[fair["market_id"] == market_id]
+            rows = fair_by_market.get(market_id)
             ep_s = np.full(paths.N_BUCKET, np.nan)
-            k = (rows["t_ms"].to_numpy() // paths.BUCKET_MS).astype("int64")
-            keep = (k >= 0) & (k < paths.N_BUCKET)
-            ep_s[k[keep]] = rows["s"].to_numpy()[keep]
+            if rows is not None:
+                k = (rows["t_ms"].to_numpy() // paths.BUCKET_MS).astype(
+                    "int64")
+                keep = (k >= 0) & (k < paths.N_BUCKET)
+                ep_s[k[keep]] = rows["s"].to_numpy()[keep]
 
         ep = build_episode(
             market_id=market_id, open_ts=int(open_ts),
