@@ -368,6 +368,14 @@ class Stream:
     max_age_ms: float | None = None
     transport_offset_ms: float | None = None
 
+    #: True for a panel already keyed on (open_ts, t_ms) rather than an
+    #: absolute receipt time -- the book and spot panels. Such a file is
+    #: already on the decision grid and must NOT be routed through
+    #: `grid_stream`, whose time column is an absolute epoch: `t_ms` is
+    #: milliseconds since the market open, so the subtraction would go hugely
+    #: negative and drop every row silently.
+    pre_gridded: bool = False
+
     def __post_init__(self):
         if self.time_kind is None:
             raise StreamInvalid(
@@ -851,6 +859,19 @@ class RegisteredStream:
     def time_unit(self):
         return self.adapter.time_unit if self.adapter else "ns"
 
+    @property
+    def pre_gridded(self):
+        """True for panels already keyed on (open_ts, t_ms).
+
+        `grid_stream` treats its time column as an ABSOLUTE epoch time. The
+        book and spot panels key on `t_ms`, milliseconds SINCE THE MARKET
+        OPEN, so routing them through it would compute `ts - open_ts` as a
+        hugely negative number and silently drop every observation. They are
+        also already on the decision grid, so there is nothing to grid. Such a
+        panel is read column-wise and never gridded.
+        """
+        return bool(self.adapter and self.adapter.pre_gridded)
+
 
 _REGISTRY = {}
 
@@ -910,13 +931,17 @@ from harness.streams.spec import Stream, TimeKind
 
 def install():
     """Register the standard streams. Idempotent."""
+    #: PRE-GRIDDED. The book and spot panels are already keyed on
+    #: (open_ts, t_ms) and are already on the decision grid. They are
+    #: registered for discovery and documentation; `load_episodes` reads them
+    #: by its existing path and never routes them through `grid_stream`.
     register("book", paths.PANEL, adapter=Stream(
-        name="book", time_col="recv_ms", time_kind=TimeKind.RECEIPT,
-        time_unit="ms", causal=True))
+        name="book", time_col="t_ms", time_kind=TimeKind.RECEIPT,
+        time_unit="ms", causal=True, pre_gridded=True))
 
     register("spot", paths.SPOT, adapter=Stream(
         name="spot", time_col="t_ms", time_kind=TimeKind.RECEIPT,
-        time_unit="ms", causal=True))
+        time_unit="ms", causal=True, pre_gridded=True))
 
     #: `px_first_recv_ns`, NOT `oracle_ms`. The oracle's own stamp runs ~1.5 s
     #: ahead of arrival on this vantage, so aligning on it is lookahead.
@@ -1364,8 +1389,13 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
     stream_frames = {}
     for name in streams:
         reg = resolve(name)
-        df = read_parquet(reg.path)
-        stream_frames[name] = (reg, df)
+        if reg.pre_gridded:
+            # Already keyed on (open_ts, t_ms) and already on the decision
+            # grid. Routing it through grid_stream would treat t_ms as an
+            # absolute epoch and drop every row. Skip: load_episodes reads
+            # these panels by its existing path.
+            continue
+        stream_frames[name] = (reg, read_parquet(reg.path))
     ...
     # inside the per-market loop, after build_episode:
     if stream_frames:
@@ -2100,9 +2130,17 @@ with the shared adapter factory above `install()`:
 ```python
 def _spot_adapter(name):
     """Spot panels predate the standard: they key on (open_ts, t_ms), not
-    recv_ns, so each needs an explicit adapter until rebuilt by write_stream."""
+    recv_ns, and are ALREADY on the decision grid.
+
+    `pre_gridded=True` is load-bearing. `grid_stream` treats its time column as
+    an absolute epoch; `t_ms` is milliseconds since the market open, so
+    gridding one of these would compute a hugely negative offset and silently
+    drop every observation. These entries exist for discovery and to put the
+    currency warnings in one place -- `load_episodes` reads the panels by its
+    existing path.
+    """
     return Stream(name=name, time_col="t_ms", time_kind=TimeKind.RECEIPT,
-                  time_unit="ms", causal=True)
+                  time_unit="ms", causal=True, pre_gridded=True)
 ```
 
 In `paths.py`, replace each panel constant's multi-line comment with a single
