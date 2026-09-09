@@ -353,9 +353,10 @@ PnL gross and net, fill counts by liquidity, max `|q|`, mean
 
 Enabled by `emit_ticks=True`, optionally restricted to a market subset (it is
 ~3,000 rows per market). Carries `t_ms, s, sigma, z, fair_p, eff_bid, eff_ask,
-book_bid, book_ask, mid, q, cash, cum_pnl, orders_live`, so a single market can
-be watched play out tick by tick and the retreated quotes inspected directly
-against the book.
+book_bid, book_ask, mid, book_age_ms, spot, q, cash, cum_pnl, orders_live`, so
+a single market can be watched play out tick by tick and the retreated quotes
+inspected directly against the book, and (via `spot`) against the venue BTC
+price itself.
 
 ### 5.4 Plots
 

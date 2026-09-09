@@ -41,7 +41,14 @@ QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 #: takes the panel and the strikes from their defaults, so all three are read
 #: -- and the panel is the primary data behind every number here. Listing only
 #: the spot left the book these results were traded against unrecorded.
-INPUTS = (paths.PANEL, paths.STRIKES, paths.SPOT)
+INPUTS = (paths.PANEL, paths.STRIKES, paths.SPOT, paths.RTDS_BTC)
+
+#: Chainlink's 1 s RTDS feed (harness.paths.RTDS_BTC) only covers
+#: 2026-08-14..2026-08-21, so only these two of the six SPOT_DAYS have a
+#: real Chainlink twap60 line available for the per-market detail plot.
+#: The four detail markets are drawn from this subset so every detail
+#: figure's BTC panel is populated.
+RTDS_COVERED_DAYS = ("2026-08-19", "2026-08-20")
 
 SWEEP_SAMPLE_SIZE = 450
 SWEEP_SEED_RNG = 20260909
@@ -92,12 +99,14 @@ def main():
     # -- pick 4 markets that actually traded, for the per-market detail -----
     headline_markets = headline["markets"]
     primary = headline_markets[headline_markets["seed"] == 0]
-    traded = primary[primary["n_fills"] > 0]["market_id"].tolist()
+    traded = primary[(primary["n_fills"] > 0)
+                     & primary["day"].isin(RTDS_COVERED_DAYS)]["market_id"].tolist()
     pick_rng = np.random.default_rng(20260909)
     n_pick = min(4, len(traded))
     pick_idx = pick_rng.choice(len(traded), size=n_pick, replace=False)
     chosen = sorted(traded[i] for i in pick_idx)
-    print("chosen markets for per-market detail:", chosen)
+    print(f"chosen markets for per-market detail (from {RTDS_COVERED_DAYS}, "
+         "the Chainlink-covered days):", chosen)
 
     detail_episodes = [ep for ep in episodes if ep.market_id in chosen]
     t3 = time.time()
@@ -118,6 +127,7 @@ def main():
         "spot_days": SPOT_DAYS,
         "sweep_sample_size": len(sweep_episodes),
         "sweep_sample_seed": SWEEP_SEED_RNG,
+        "rtds_covered_days": RTDS_COVERED_DAYS,
         "chosen_detail_markets": chosen,
         "run_dirs": {k: v["run_dir"] for k, v in results.items()},
     }

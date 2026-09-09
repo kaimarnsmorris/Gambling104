@@ -10,11 +10,28 @@ harness twice.
 
     1. cumulative net PnL over the ordered market sequence, day boundaries
        marked
-    2. per-market detail for 4 randomly-chosen traded markets: book/fair/
-       eff quotes with fill markers, position, mark-to-market PnL
+    2. per-market detail for 4 traded markets, chosen from the days with
+       Chainlink coverage: book/fair/eff quotes with fill markers, position,
+       mark-to-market PnL, and a fourth panel in BTC dollar space (venue
+       spot, the model's fair BTC estimate, the real Chainlink 60 s TWAP
+       where it is covered, and the Chainlink strike/settlement levels)
     3. markout (delta_quality_c) distribution, maker vs taker
     4. PnL-proxy and fill count by time-to-expiry bucket
     5. calibration: fair_p at fill time vs realised outcome frequency
+
+Note on the BTC-space panel's Chainlink content: `twap60` from the RTDS
+capture (see `harness.paths.RTDS_BTC`) is a real, continuous, 1 s-cadence
+Chainlink series and IS plotted as a line where it covers the market -- it is
+the exact settlement variable, so it sits on the same axis as the model's
+E[A] and the gap between them is the model's forecast error. That feed's
+coverage window (2026-08-14 through 2026-08-21) does not reach the back half
+of this evaluation's 6-day sample, so the four detail markets are drawn only
+from the covered days (08-19, 08-20); a market outside the window would show
+no Chainlink line and the panel says so rather than interpolating across the
+gap. The strike and settlement horizontals are independent of that coverage
+-- they come from the boundary reports this project already verified against
+signed on-chain `ReportVerified` reports at median and max difference $0.00
+across 1,992 markets -- and are drawn regardless.
 """
 import json
 import os
@@ -39,6 +56,32 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 BUY_MARKER = dict(marker="^", color="tab:green", s=28, zorder=5, label="buy")
 SELL_MARKER = dict(marker="v", color="tab:red", s=28, zorder=5, label="sell")
+
+#: RTDS coverage is 2026-08-14 -> 2026-08-21 (see harness.paths.RTDS_BTC); of
+#: this evaluation's 6-day sample only these two days fall inside it.
+RTDS_COVERED_DAYS = ("2026-08-19", "2026-08-20")
+
+
+def _rtds_twap60_for_market(open_ts):
+    """(tte_s, twap60) for one market's window, or (None, None) if uncovered.
+
+    RTDS is 1 Hz; `oracle_ms` is epoch ms, `open_ts` is epoch seconds. No
+    interpolation -- only the actual 1 s samples inside [open_ts, open_ts+300)
+    are returned, converted to seconds-to-expiry the same way the tick axis
+    is.
+    """
+    lo_ms, hi_ms = open_ts * 1000, (open_ts + 300) * 1000
+    rtds = read_parquet(paths.RTDS_BTC,
+                        columns=["oracle_ms", "twap60"],
+                        filters=[("oracle_ms", ">=", lo_ms),
+                                ("oracle_ms", "<", hi_ms)])
+    if not len(rtds):
+        return None, None
+    rtds = rtds.dropna(subset=["twap60"]).sort_values("oracle_ms")
+    if not len(rtds):
+        return None, None
+    tte_s = 300.0 - (rtds["oracle_ms"].to_numpy() / 1000.0 - open_ts)
+    return tte_s, rtds["twap60"].to_numpy()
 
 
 def _load_run(run_dir):
@@ -81,7 +124,8 @@ def plot_cumulative_pnl(markets, path, title):
 
 # -- 2. per-market detail ----------------------------------------------------
 
-def plot_market_detail(ticks, ledger, market_id, path):
+def plot_market_detail(ticks, ledger, ep, path):
+    market_id = ep.market_id
     t = ticks[ticks["market_id"] == market_id].sort_values("t_ms")
     if not len(t):
         return False
@@ -90,8 +134,8 @@ def plot_market_detail(ticks, ledger, market_id, path):
     fills = ledger[ledger["market_id"] == market_id].sort_values("t_ms")
     fill_tte = 300.0 - fills["t_ms"].to_numpy() / 1000.0
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True,
-                             gridspec_kw={"height_ratios": [2.2, 1, 1]})
+    fig, axes = plt.subplots(4, 1, figsize=(10, 11.5), sharex=True,
+                             gridspec_kw={"height_ratios": [2.2, 1, 1, 1.6]})
 
     ax = axes[0]
     ax.plot(tte_s, t["book_bid"], color="0.6", lw=0.8, label="book bid")
@@ -143,7 +187,29 @@ def plot_market_detail(ticks, ledger, market_id, path):
     axes[2].plot(tte_s, t["cum_pnl"], color="tab:green", lw=1.0)
     axes[2].axhline(0.0, color="0.6", lw=0.6)
     axes[2].set_ylabel("mark-to-market PnL, USD")
-    axes[2].set_xlabel("seconds to expiry")
+
+    # -- panel 4: BTC dollar space -------------------------------------
+    ax4 = axes[3]
+    ax4.plot(tte_s, t["spot"], color="0.4", lw=0.9, label="venue spot")
+    ax4.plot(tte_s, t["s"], color="tab:blue", lw=1.2,
+            label="model E[A] (fair.precompute)")
+
+    rtds_tte, rtds_twap60 = _rtds_twap60_for_market(ep.open_ts)
+    if rtds_tte is not None:
+        ax4.plot(rtds_tte, rtds_twap60, color="tab:red", lw=1.1,
+                label="Chainlink twap60 (settlement variable)")
+    else:
+        ax4.text(0.02, 0.05, "Chainlink twap60: no coverage this market",
+                fontsize=7, color="tab:red", transform=ax4.transAxes)
+
+    ax4.axhline(ep.strike, color="0.2", lw=1.2, ls="-",
+               label="Chainlink strike (60s TWAP @ open)")
+    if ep.settle is not None:
+        ax4.axhline(ep.settle, color="0.2", lw=1.2, ls="--",
+                   label="Chainlink settle (60s TWAP @ expiry)")
+    ax4.set_ylabel("BTC, USD")
+    ax4.set_xlabel("seconds to expiry")
+    ax4.legend(fontsize=6.5, ncol=2, loc="upper left")
 
     for ax in axes:
         ax.invert_xaxis()
@@ -262,8 +328,26 @@ def main():
                         "Cumulative net PnL, unified making and taking")
 
     chosen = manifest["chosen_detail_markets"]
+    # NOTE: deliberately NOT `markets=tuple(chosen)` here. That turns into a
+    # pyarrow predicate pushed into the panel read, and on this panel file
+    # (written by a newer parquet-cpp-arrow than the pinned pyarrow 19 can
+    # parse -- see harness/io.py's module docstring) a PUSHED "in" filter
+    # aborts the process natively instead of raising the catchable OSError
+    # the unfiltered read hits, so `read_parquet`'s polars fallback never
+    # gets a chance to run. Restricting by `days` first (post-read, same as
+    # every other caller here) then filtering in Python, exactly like
+    # `run.py`'s own `detail_episodes = [ep for ep in episodes if ...]`,
+    # avoids the pushdown path entirely.
+    candidate_eps = load_episodes(spot_path=paths.SPOT,
+                                  days=manifest.get("rtds_covered_days"))
+    detail_eps = {ep.market_id: ep for ep in candidate_eps
+                 if ep.market_id in chosen}
     for i, mkt in enumerate(chosen):
-        ok = plot_market_detail(detail["ticks"], detail["ledger"], mkt,
+        ep = detail_eps.get(mkt)
+        if ep is None:
+            print(f"WARNING: could not load episode for chosen market {mkt}")
+            continue
+        ok = plot_market_detail(detail["ticks"], detail["ledger"], ep,
                                 os.path.join(out_dir, f"market_detail_{i}_{mkt}.png"))
         if not ok:
             print(f"WARNING: no ticks for chosen market {mkt}")

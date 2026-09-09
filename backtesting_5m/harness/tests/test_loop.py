@@ -283,7 +283,7 @@ def test_tick_output_is_off_by_default_and_complete_when_on(flat_episode):
     assert _run(flat_episode, params, ExecConfig())["ticks"] == []
     ticks = _run(flat_episode, params, ExecConfig(), emit_ticks=True)["ticks"]
     assert len(ticks) == 3000
-    assert {"t_ms", "eff_bid", "eff_ask", "q", "cum_pnl"} <= set(ticks[0])
+    assert {"t_ms", "eff_bid", "eff_ask", "q", "cum_pnl", "spot"} <= set(ticks[0])
 
 
 def test_results_are_reproducible_across_runs(flat_episode):

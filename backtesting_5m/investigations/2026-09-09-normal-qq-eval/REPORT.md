@@ -8,13 +8,13 @@ by sha256 in each run's `manifest.json`.
 policy changed underneath it (see "Not comparable" below), so the earlier
 maker/taker numbers are void and have been overwritten, not appended.
 
-Run artefacts: `runs/2026-09-08T20-58-41__4e2601/` (headline, all plots),
-`runs/2026-09-08T20-07-49__3fe78a/` (sweeps, base + 5 latency arms + 3 fill
-arms), `runs/2026-09-08T20-10-16__81d426/` (tick emission for the 4 detail
-markets). A 50-market timing probe (3 seeds, ~8 s) was run first and
-extrapolated to ~250 s for the full 1,553-market x 3-seed headline; the
-actual headline run took 166 s, sweeps 148 s, detail 0.5 s — total ~5.5
-minutes end to end, matching the estimate.
+Run artefacts: `runs/2026-09-08T23-51-44__4e2601/` (headline, all plots),
+`runs/2026-09-08T23-54-38__3fe78a/` (sweeps, base + 5 latency arms + 3 fill
+arms), `runs/2026-09-08T23-57-19__8546de/` (tick emission for the 4 detail
+markets). Re-run 2026-09-09 to add the `spot` tick column and the BTC-space
+detail panel; the headline numbers below are unchanged (same model, same
+policy, one extra diagnostic column). Headline run took 175 s, sweeps 161 s,
+detail 0.5 s — total ~5.7 minutes end to end.
 
 ## What changed and why the old numbers are void
 
@@ -37,6 +37,46 @@ fill it is the fee-adjusted, snapped resting limit that fill traded at; for a
 taker fill it is the crossing price paid. The per-market detail plots below
 draw eff_bid/eff_ask as dotted "theoretical" lines and fill markers at the
 real placed price, split by maker (filled marker) vs taker (hollow marker).
+
+**Each per-market detail figure now has a fourth panel, in BTC dollar
+space**, sharing the same seconds-to-expiry x-axis as the three panels above
+it: venue BTC spot, the model's fair BTC estimate (`fair.py`'s `E[A]`, i.e.
+`E[settling TWAP]`), the real Chainlink 60 s TWAP (`twap60`) from the RTDS
+capture, and the Chainlink strike and settlement levels (horizontal lines,
+solid and dashed). This is the probability panel's story told in the units
+the model actually forecasts in: `E[A]` is a forecast of `twap60`
+specifically, so the two sit on the same axis and the vertical gap between
+them, at any point in the market, is the model's forecast error.
+
+**Correction to an earlier draft of this note:** a previous version of this
+report said no continuous Chainlink series existed and that only the two
+boundary levels could be drawn. That was wrong — it was based on the
+boundary-report capture (`chain_reports.parquet`) alone. A real, continuous,
+1 Hz Chainlink feed does exist (`harness.paths.RTDS_BTC`, an external,
+read-only capture living in the sibling `Gambling102` repo, not copied into
+`data/`), and `twap60` on it is exactly the settlement variable this era's
+markets pay out on. Its coverage window is **2026-08-14 through
+2026-08-21 only**, which does not reach the back half of this evaluation's
+six-day sample (08-19 → 08-24) — so the twap60 line is drawn only for
+markets on 08-19/08-20, and the four per-market detail figures are
+deliberately chosen from those two covered days (seeded, reproducible; see
+`run.py`'s `RTDS_COVERED_DAYS`) so all four BTC panels are populated. The
+strike and settlement horizontals are unaffected by this coverage gap — they
+come from the boundary reports, independently verified against signed
+on-chain `ReportVerified` reports at median **and** max difference of $0.00
+across 1,992 markets — and are drawn on every detail figure regardless of
+day.
+
+On the two markets inspected, `E[A]` tracks venue spot closely throughout
+(as the model's own theory predicts for τ > 60 s, where `E[A] = S_t`), but
+tracks the *actual* Chainlink `twap60` only loosely for most of the window —
+the two series can sit tens of dollars apart in the middle of a market — and
+converge only in the closing ~60 s, exactly where `fair.py`'s blend toward
+the realised-TWAP term takes over. That convergence-only-near-expiry pattern
+is the BTC-space version of the same overconfidence story the calibration
+section documents below: mid-market, the model is confidently reporting a
+spot-tracking number as if it were the settlement forecast, when Chainlink's
+own TWAP is materially smoother and often on the other side of the strike.
 
 ## Headline
 
@@ -220,4 +260,4 @@ blocks are frozen and re-runnable.
 
 Reproduce the calibration table with `python calibration_uncond.py`.
 Reproduce the maker/taker split with `python split_headline.py
-runs/2026-09-08T20-05-03__4e2601 0`.
+runs/2026-09-08T23-51-44__4e2601 0`.

@@ -78,6 +78,7 @@ class Ledger:
             "eff_bid": eff_bid, "eff_ask": eff_ask,
             "book_bid": float(ep.bid[i]), "book_ask": float(ep.ask[i]),
             "mid": float(ep.mid[i]), "book_age_ms": float(ep.book_age_ms[i]),
+            "spot": float(ep.spot[i]),
             "q": q, "cash": cash, "cum_pnl": cum_pnl,
             "orders_live": orders_live,
         })
