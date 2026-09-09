@@ -192,3 +192,58 @@ zero. On 1,102 markets over 3.9 priceable days it could not be otherwise.
    lives.
 5. **Do not** fit the +$10 long-tte bias in §4, and do not tune `e_z` upward:
    wide arms improve PnL only by trading less, and their c/share gets worse.
+
+---
+
+## 9. A second quote rule, and what the plot shows that the table did not
+
+`e_p=0.04, rpl_p=0.0035, max_pos=100` (**B**) against `0.02, 0.002, 50`
+(**A**). Note these differ in kind near the cap, not only in degree: `q` in
+the quote algebra is raw shares, so the lean at full inventory is
+`max_pos * rpl_p` -- 10 c for A, **35 c for B**, past the point where one
+side clips to the [0,1] bound and simply stops quoting.
+
+| arm | fills | pnl/market | c/share |
+|---|---|---|---|
+| **B, last 60 s** | 4,086 | **+1.005** | **+2.709** |
+| B, 30-60 s | 3,266 | +0.972 | **+3.278** |
+| B, 20-75 s | 5,776 | +0.643 | +1.227 |
+| A, last 60 s | 4,538 | +0.309 | +0.749 |
+| A, 30-60 s | 3,695 | +0.269 | +0.802 |
+| B, all 300 s | 35,796 | −4.696 | −1.446 |
+| A, all 300 s | 44,836 | −5.935 | −1.459 |
+
+**B beats A at every one of the twelve window/e_z combinations tested**, by
+roughly 3x on the last-minute arms and by $1.2/market even on the full
+window. That comparison is the robust part of this report: it is a consistent
+ordering across twelve paired arms, not a single maximum. B also loses less
+to concentration -- delete-top-10 takes A from +0.309 to +0.045 (85 % gone)
+but B only from +1.005 to +0.501.
+
+### And then the cumulative plot
+
+`cum_pnl.png` shows the whole profit arriving as one step around market 560,
+then flat for the remaining 450. Broken out by day:
+
+| day | markets | PnL |
+|---|---|---|
+| 2026-08-17 | 236 | **−177** |
+| 2026-08-18 | 275 | **−93** |
+| **2026-08-19** | 283 | **+1,595** |
+| 2026-08-20 | 284 | **−244** |
+| 2026-08-21 | 24 | +27 |
+
+**Four of the five days lose.** The 120 markets of 2026-08-19 02:45-12:45
+made +1,779 while the other 982 markets lost −672. The headline +1.005 per
+market is one morning.
+
+This is not what delete-top-10 measures -- it is not ten lucky markets, it is
+one regime lasting hours, which is why that gate passed while
+`sign_survives_periods` failed. The cumulative plot showed it immediately and
+no summary statistic in this report did. That is the argument for drawing the
+curve before believing the mean.
+
+**Standing conclusion, unchanged:** B is a genuinely better quote rule and the
+last-minute window is a genuinely better place to trade, both robustly. The
+strategy is still not profitable -- it has one good day in five and no
+evidence of an edge that persists.
