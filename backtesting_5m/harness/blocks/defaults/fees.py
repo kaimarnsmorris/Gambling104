@@ -42,6 +42,13 @@ def apply_daily_minimum(ledger, minimum_usd: float = 1.0):
     Measured with perfect separation over 131 earn-days: the smallest paid was
     $1.0359 and the largest skipped $0.7209. Dust days are simply not paid, so
     a backtest that books them is overstating maker economics.
+
+    The floor is per day PER REPLAY. A seed is an independent replay of the
+    same calendar, so an n-seed ledger holds every day n times; grouping on
+    `day` alone would sum one day's rebate across all n and lift genuine dust
+    days over the floor -- roughly n times too generous, and generous is the
+    one direction this harness must never be. Group on (day, seed) whenever
+    the ledger carries a seed, and on day alone when it does not.
     """
     import pandas as pd  # local: the fee model itself stays dependency-free
 
@@ -50,7 +57,14 @@ def apply_daily_minimum(ledger, minimum_usd: float = 1.0):
 
     out = ledger.copy()
     maker = out["liquidity"] == int(Liquidity.MAKER)
-    earned = -out.loc[maker].groupby("day")["fee_usd"].sum()
+    keys = ["day", "seed"] if "seed" in out.columns else ["day"]
+    earned = -out.loc[maker].groupby(keys)["fee_usd"].sum()
     dust = set(earned[earned < minimum_usd].index)
-    out.loc[maker & out["day"].isin(dust), "fee_usd"] = 0.0
+    if len(keys) == 1:
+        is_dust = out["day"].isin(dust)
+    else:
+        is_dust = pd.Series(
+            [k in dust for k in zip(*(out[c] for c in keys))],
+            index=out.index)
+    out.loc[maker & is_dust, "fee_usd"] = 0.0
     return out

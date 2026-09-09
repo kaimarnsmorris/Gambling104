@@ -123,3 +123,35 @@ def test_taker_fees_are_untouched_by_the_minimum():
     ledger = pd.DataFrame({
         "day": ["2026-08-14"], "liquidity": [1], "fee_usd": [0.10]})
     assert apply_daily_minimum(ledger).loc[0, "fee_usd"] == pytest.approx(0.10)
+
+
+def test_dust_is_measured_per_seed_rather_than_pooled_across_them():
+    """A seed is a replay of the same calendar, not another day of earnings.
+
+    Grouping on `day` alone summed one day's rebate across every seed, so a
+    3-seed ledger reported roughly three times the day's earnings and lifted
+    genuine dust days over the floor -- an error that can only ever be too
+    generous to the maker, which is the one direction this harness must never
+    be wrong in.
+    """
+    ledger = pd.DataFrame({
+        "day": ["2026-08-14", "2026-08-14"],
+        "seed": [0, 1],
+        "liquidity": [0, 0],
+        "fee_usd": [-0.60, -0.60],
+    })
+    assert -ledger["fee_usd"].sum() > 1.0, "pooled, this day clears the floor"
+
+    out = apply_daily_minimum(ledger)
+    assert out["fee_usd"].tolist() == [0.0, 0.0], (
+        "each seed earned $0.60 on this day, which is dust in both replays")
+
+
+def test_a_paid_day_is_still_paid_in_every_seed():
+    ledger = pd.DataFrame({
+        "day": ["2026-08-14", "2026-08-14"],
+        "seed": [0, 1],
+        "liquidity": [0, 0],
+        "fee_usd": [-4.00, -4.00],
+    })
+    assert apply_daily_minimum(ledger)["fee_usd"].tolist() == [-4.00, -4.00]
