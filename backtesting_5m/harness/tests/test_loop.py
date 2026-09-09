@@ -296,3 +296,41 @@ def test_results_are_reproducible_across_runs(flat_episode):
     b = _run(ep, params, execn)
     assert a["pnl_net"] == pytest.approx(b["pnl_net"])
     assert a["n_fills"] == b["n_fills"]
+
+
+# --- warm-up is invisible to the loop -----------------------------------
+
+
+def test_the_loop_is_unchanged_by_the_presence_of_warm_up(flat_episode):
+    """Warm-up is for `precompute`. The loop must never index it.
+
+    The warm-up arrays below are deliberately absurd -- a book and a spot
+    nothing like the market's own -- so that any indexing of them would move
+    a fill, a fee or the PnL. Nothing moves.
+    """
+    from dataclasses import replace
+
+    n = 9000
+    warm = replace(
+        flat_episode,
+        warmup_s=900.0, has_warmup=True,
+        warmup_spot=np.full(n, 1.0),
+        warmup_spot_age_ms=np.zeros(n),
+        warmup_has_spot=np.ones(n, dtype=bool),
+        warmup_spot_usdt=np.full(n, 2.0),
+        warmup_chainlink=np.full(n, 3.0),
+        warmup_chainlink_age_ms=np.zeros(n),
+    )
+    warm.ask[:] = 0.20
+    cold = replace(flat_episode)
+    cold.ask[:] = 0.20
+
+    params = QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0)
+    a = _run(cold, params, ExecConfig())
+    b = _run(warm, params, ExecConfig())
+
+    assert len(warm) == len(cold) == 3000, "len() must not include warm-up"
+    for key in ("n_fills", "shares", "pnl_gross", "pnl_net", "fees",
+                "max_abs_q", "settled"):
+        assert a[key] == pytest.approx(b[key]), key
+    assert a["fills"] == b["fills"]

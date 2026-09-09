@@ -124,3 +124,85 @@ def test_fallback_succeeds_when_only_pandas_fails(monkeypatch, sample_parquet, s
     pd.testing.assert_frame_equal(
         out.reset_index(drop=True).sort_values("open_ts").reset_index(drop=True),
         sample_df.sort_values("open_ts").reset_index(drop=True))
+
+
+# --- directories whose files disagree about their columns ---------------
+#
+# stream_venue_l1 does this on 2026-08-18: 12,961 of 13,438 files carry the
+# okx and bybit blocks and 477 do not. polars takes the first file it globs
+# as the schema for the scan and raises "extra column in file outside of
+# expected schema: okx_bid" on the rest, which cost that whole day. The
+# columns the spot build actually asks for are present in every file.
+
+
+@pytest.fixture
+def mixed_schema_dir(tmp_path):
+    """Two files that agree on the wanted columns and disagree on the rest."""
+    d = tmp_path / "date=2026-08-18"
+    d.mkdir()
+    pd.DataFrame({"ts": [1.0, 2.0], "bn_spot_mid": [10.0, 11.0]}).to_parquet(
+        d / "a.parquet", index=False)
+    pd.DataFrame({"ts": [3.0], "bn_spot_mid": [12.0],
+                  "okx_bid": [99.0]}).to_parquet(d / "b.parquet", index=False)
+    return d
+
+
+def test_the_raw_polars_glob_really_does_reject_this(mixed_schema_dir):
+    """The failure being worked around, pinned so the retry is not cargo."""
+    import polars as pl
+    with pytest.raises(Exception, match="okx_bid"):
+        pl.read_parquet(str(mixed_schema_dir / "**" / "*.parquet"),
+                        columns=["ts", "bn_spot_mid"])
+
+
+def test_a_mixed_schema_directory_still_reads_the_wanted_columns(
+        monkeypatch, mixed_schema_dir):
+    def broken_pandas_read(*args, **kwargs):
+        raise OSError("Repetition level histogram size mismatch")
+
+    monkeypatch.setattr(io.pd, "read_parquet", broken_pandas_read)
+
+    out = io.read_parquet(str(mixed_schema_dir),
+                          columns=["ts", "bn_spot_mid"])
+    assert list(out.columns) == ["ts", "bn_spot_mid"]
+    assert sorted(out["ts"]) == [1.0, 2.0, 3.0]
+    assert "okx_bid" not in out.columns
+
+
+def test_the_schema_group_retry_reads_a_mixed_directory_on_its_own(
+        mixed_schema_dir):
+    """The last resort, exercised directly: it must not need the cheap path."""
+    out = io._read_dir_by_schema_group(str(mixed_schema_dir),
+                                       ["ts", "bn_spot_mid"])
+    assert sorted(out["ts"]) == [1.0, 2.0, 3.0]
+
+
+def test_the_schema_group_retry_keeps_every_column_when_none_are_named(
+        mixed_schema_dir):
+    """Diagonal, not intersecting: a column present in one group survives."""
+    out = io._read_dir_by_schema_group(str(mixed_schema_dir), None)
+    assert set(out.columns) == {"ts", "bn_spot_mid", "okx_bid"}
+    assert out["okx_bid"].isna().sum() == 2
+
+
+def test_a_column_missing_from_some_files_is_an_error_not_a_null(
+        monkeypatch, tmp_path):
+    """Silence would be the dangerous answer here.
+
+    A requested column absent from part of the archive means the caller's
+    request cannot be honoured. Filling it with nulls would hand the spot
+    build a day of unpriced rows that look merely sparse.
+    """
+    d = tmp_path / "date=2026-08-18"
+    d.mkdir()
+    pd.DataFrame({"ts": [1.0], "usdt_basis": [40.0]}).to_parquet(
+        d / "a.parquet", index=False)
+    pd.DataFrame({"ts": [2.0]}).to_parquet(d / "b.parquet", index=False)
+
+    def broken_pandas_read(*args, **kwargs):
+        raise OSError("Repetition level histogram size mismatch")
+
+    monkeypatch.setattr(io.pd, "read_parquet", broken_pandas_read)
+
+    with pytest.raises(OSError):
+        io.read_parquet(str(d), columns=["ts", "usdt_basis"])
