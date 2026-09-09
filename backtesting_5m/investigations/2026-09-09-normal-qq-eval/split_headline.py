@@ -45,6 +45,16 @@ def split(run_dir, seed=None):
             "n_fills": n_fills,
             "n_markets_touched": n_markets,
             "shares": shares,
+            # MARKOUT, before fees. `delta_quality_c` is already cents per
+            # share, so the share-weighted mean is the honest per-share
+            # number and the plain mean is the per-FILL one; they differ
+            # whenever fill sizes differ, and both are reported because the
+            # first says what the strategy earned and the second says what a
+            # typical fill was worth.
+            "markout_c_per_share": (100.0 * gross_usd / shares
+                                    if shares else float("nan")),
+            "markout_c_per_fill": (float(l["delta_quality_c"].mean())
+                                   if n_fills else float("nan")),
             "gross_usd": gross_usd,
             "fees_usd": fees_usd,
             "net_usd": net_usd,

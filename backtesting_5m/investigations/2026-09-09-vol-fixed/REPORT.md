@@ -1,6 +1,19 @@
 # vol-fixed — is sigma why the model is badly calibrated?
 
-> **ANSWERED IN PART II — read that first.** On the corrected BTC/USD panel:
+> **CURRENT ANSWER IS IN PART III — read that first.** With the warm-up on, the
+> basis halflife at 180 s and sigma refitted on the oracle-overlap panel, the
+> model has essentially **caught the book on calibration** (test Brier 0.1359
+> against the book's 0.1353, a gap of 0.0006 where the previous pass measured
+> 0.0239) — and it **still loses money in every one of the six arm/half cells,
+> every gate passing, every CI below zero.** Two results reverse Part II: the
+> CALIBRATED arm is now *worse* than the baseline out of sample, because an
+> unconditional sigma table cannot cross the 2.28x volatility regime change
+> inside this five-day window; and the "better calibration, bigger loss"
+> pattern is confirmed in BOTH directions on the same run — the test half's
+> smaller loss is the model trading 13 % less because it got more overconfident,
+> not the model getting better.
+
+> **PART II — superseded but not withdrawn.** On the corrected BTC/USD panel:
 > **fixing sigma DOES fix the calibration** (test Brier 0.1528 -> 0.1398 against
 > the book's 0.1289; saturation 27 % -> 11 % and now settling 0.995 correctly;
 > the repaired curves sit on the diagonal), and it **does NOT change the sign of
@@ -367,3 +380,243 @@ clock offset is a configured 0.0 s (plausible band 0-74 ms), and this is six
 days of one instrument with three days per half. The corrected panel removes a
 level bias; it does not make any of those go away, and the PnL conclusion in
 particular still rests on a modelled fill.
+
+---
+
+# PART III — warm-up on, sigma refitted, oracle-overlap panel (2026-09-09)
+
+Four upstream defects were fixed before this pass, and every number in Parts I
+and II predates at least one of them:
+
+1. the spot panel was BTC/USDT, not BTC/USD (fixed before Part II);
+2. `fair.py` now LEARNS the basis against the Chainlink oracle, gridded by
+   receipt (`px_first_recv_ns`) rather than by the oracle's own stamp;
+3. `s` is shifted onto the decision grid like every other Episode array;
+4. Episodes carry a pre-open warm-up region, so stateful estimators burn in
+   instead of restarting cold every 300 s.
+
+This pass turns (4) on, raises the basis halflife to match it, refits sigma
+from scratch, and re-runs the three arms. **Nothing here is tuned.** The quote
+parameters are the same unoptimised `QuoteParams(e_p=0.01, rpl_p=0.0005,
+max_pos=50, shares=10)` as every previous pass.
+
+## III.0 What changed in the blocks
+
+| | before | after |
+|---|---|---|
+| panel | `SPOT_USD`, 08-19..24 | `SPOT_ORACLE_WINDOW`, 08-17..21 |
+| calendar split | fit 08-19..21 / test 08-22..24 | fit **08-17..18** / test **08-19..21** |
+| warm-up | none | **900 s**, both fit and run |
+| `fair.BASIS_HALFLIFE_S` | 60 s | **180 s** |
+| `fair` gap sampling | fresh oracle, ANY mid | fresh oracle **and** mid ≤ 1 s old |
+| `vol_baseline` RV EWMA | seeded at 0 every open | burnt in across the warm-up |
+| `vol_baseline` MIN_UPDATES gate | in-window | unchanged, in-window |
+
+The split is chosen so BOTH halves have oracle coverage, which the old one did
+not: the RTDS capture stops at 2026-08-21 01:59 UTC, so on the 08-19..24 panel
+the test half had no Chainlink line at all and `fair.py` — which returns NaN
+without one — could not price a single test market. Scorable markets (spot,
+oracle and a settlement) run 236 / 275 / 283 / 284 / 24 across 08-17..21, so
+this cut is 511 fit against 591 test.
+
+## III.1 The warm-up is used, not merely enabled — measured
+
+Turning the flag on proves nothing by itself; a block that ignores the extra
+arrays produces byte-identical output. `warmup_check.py` runs the same blocks
+over the same 568 markets (2026-08-19..20) twice, warm and cold:
+
+| | cold | warm |
+|---|---|---|
+| B_t at the open, identical to cold | — | **0.00 %** of 567 markets |
+| \|shift in B at the open\| | — | mean **$5.32**, median $2.66, p90 $11.86 |
+| cross-market sd of B at the open | $17.72 | **$14.89** |
+| **\|step in B across a 300 s boundary\|** | mean **$5.64**, median $2.94 | mean **$0.18**, median **$0.09** |
+| that step, reduction | — | **32.1x** |
+| `vol_baseline` sigma, warm / cold | — | median **1.139** (p10 1.046, p90 1.379) |
+
+The boundary step is the decisive one. Markets are back to back on a 300 s
+grid, so B at the last bucket of market *k* and B at the first bucket of market
+*k+1* are two estimates of the same quantity 100 ms apart. Cold, the second
+throws away everything the first learned and the series sawtooths by $2.94 at
+the median; warm, it crosses the seam and the step collapses to the size of one
+EWM update. `warmup_basis.png` draws eight consecutive markets: the warm series
+is continuous across every dotted boundary, the cold one jumps at each.
+
+The vol row is the second half of the same story. `vol_baseline.py`'s
+realised-variance EWMA has a 100 s halflife against a 300 s window, so seeding
+it at zero every open reported a variance biased low for most of the episode it
+was scored on: **the cold EWMA was 14 % too small at the median and 38 % too
+small at the 90th percentile.**
+
+### A defect the warm-up exposed, and the fix
+
+Burning the basis in across the region initially made it *worse*, not better:
+B arrived at some opens $25 off and decayed back over the following 15 minutes.
+The cause is not the warm-up. **50 of the 1,389 market slots on
+`SPOT_ORACLE_WINDOW` carry no venue spot at all**, and each one blanks the last
+300 s of the warm-up region of the three markets that follow it. There the
+panel carries the last mid forward for up to 295 s while the oracle keeps
+printing at 1 Hz — so every `M - C` sampled in that stretch is *minus the BTC
+move since the venue feed died*, not a basis. Measured on 2026-08-19 that
+dragged B to +136 where the true basis was +44.
+
+The block was guarding one side of the difference and not the other: it
+required a fresh ORACLE print but accepted whatever mid the panel happened to
+be carrying. `MAX_MID_AGE_MS = 1000` closes it. The spot age distribution is
+bimodal — the fraction over 200 ms (0.25 % in-window, 1.17 % in warm-up) and
+the fraction over 5 s agree to three decimals — so the threshold selects
+outages and nothing else, and **on 60 cold in-window markets the guard changes
+the output by exactly 0.0**: it is a warm-up-region fix that leaves every
+previously measured in-window number untouched.
+
+## III.2 Sigma refitted — the forecast error collapsed
+
+`sigma_fit.json`, refitted from scratch on the new panel, split and warm-up.
+The estimator is unchanged: `sqrt(pi/2) * mean|ln(A_T / s_t)|` per tte bucket,
+fit days only.
+
+| | previous (Part II) | **this pass** |
+|---|---|---|
+| fit rows / markets | 52,883 / 827 | 33,165 / **511** |
+| near-expiry floor, sigma at tau = 0.5 s | 0.97 bp | **0.26 bp** |
+| sigma at tau = 300 s | 15.8 bp | **5.96 bp** |
+| short-tau bias, fit half | −0.705 bp | **−0.012 bp** (se 0.005) |
+| short-tau bias, test half | −0.459 bp | **−0.020 bp** (se 0.008) |
+| **fit / test bias ratio** | **1.535** | **0.600** |
+| forecast bias across tau | −0.73 … +1.67 bp | **−0.04 … +0.57 bp** |
+| free power-law exponent | 0.602 | **0.682** |
+| free `tau_eff` window | 0.5 s (floor) | **0.5 s (floor)** |
+| EWMA conditional corr | 0.3805 | 0.2186 |
+
+**Read the ratio with the levels beside it.** 0.600 is not obviously "closer to
+1" than 1.535 — on a log scale it is very slightly further. But both halves'
+biases are now **35 to 60 times smaller in absolute terms**: −0.012 bp and
+−0.020 bp are about **$0.08 and $0.13** on a $65,000 index. They remain
+distinguishable from zero (t = −2.43 and −2.62 on 3,066 and 3,564 rows) and are
+economically nil. The ratio has stopped being a diagnostic because it is now a
+ratio of two numbers indistinguishable from zero; the honest statement is that
+**the short-tau level bias the earlier passes were chasing is gone**, not that
+the ratio improved.
+
+The near-expiry floor is the same result seen from the other end. Part II
+attributed a ~0.9 bp (~$7) floor to "the residual basis between the venue and
+the oracle, which does not shrink with elapsed time". Learning that basis over
+a 180 s halflife with 900 s of burn-in cuts the floor to **0.26 bp (~$1.7)**.
+Most of what Part II called irreducible was the cold-start seeding error.
+
+### The one thing this split cannot avoid
+
+Realised movement rises monotonically across these five days:
+
+| day | 08-17 | 08-18 | 08-19 | 08-20 | 08-21 |
+|---|---|---|---|---|---|
+| markets | 236 | 275 | 283 | 284 | 27 |
+| realised scale at 300 s (bp) | 6.47 | 5.53 | 11.19 | 14.60 | 27.69 |
+
+The fit half averages **5.96 bp** and the test half **13.57 bp** — the test
+half is **2.28x more volatile**. Any calendar cut on this window puts the quiet
+days in the fit half, and an UNCONDITIONAL sigma table carries none of that
+across, so the calibrated arm enters the test half with a sigma roughly half
+the size those days warrant. This is a property of a five-day window with a
+trend in it, not of the fit, and it is the largest caveat on every test-half
+number below.
+
+## III.3 The three arms
+
+Sample: markets carrying spot, a settlement oracle and a settlement.
+`QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10)`, seeds (0, 1, 2),
+warm-up 900 s. Calibration is five decision indices per market (tte 270, 210,
+150, 90, 30 s), the book scored on identical rows.
+
+### TEST days, 2026-08-19..21 — 591 markets, 2,951 observations. Lead with these.
+
+Book Brier on identical rows: **0.1353**.
+
+| arm | Brier | p≥0.999 | its realised | worst decile gap | fills | c/share | $/market | day-blocked CI | gates |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | **0.1359** | 0.205 | 0.974 | +0.129 | 23,079 | −1.148 | **−4.482** | [−7.487, −2.013] | all pass |
+| calibrated | 0.1407 | 0.232 | 0.955 | −0.154 | 19,994 | −0.951 | **−3.216** | [−6.817, −1.017] | all pass |
+| flat | 0.1445 | 0.240 | 0.951 | −0.158 | 19,274 | −0.999 | −3.257 | [−5.152, −1.217] | all pass |
+
+### FIT days, 2026-08-17..18 — 511 markets, 2,551 observations. In sample for the calibrated arm.
+
+Book Brier on identical rows: **0.1204**.
+
+| arm | Brier | p≥0.999 | its realised | worst decile gap | fills | c/share | $/market | day-blocked CI | gates |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | 0.1328 | 0.203 | 0.971 | −0.140 | 15,394 | −1.525 | **−4.595** | [−6.630, −2.848] | all pass |
+| calibrated | **0.1315** | **0.123** | 0.994 | −0.138 | 20,777 | −2.106 | **−8.564** | [−10.041, −7.297] | all pass |
+| flat | 0.1327 | 0.109 | 0.982 | +0.080 | 20,490 | −2.163 | −8.673 | [−9.315, −8.122] | all pass |
+
+### The headline calibration result
+
+**The model has closed on the book.** On the test half the baseline's Brier is
+0.1359 against the book's 0.1353 — a gap of **0.0006**, where the previous pass
+measured 0.1528 against 0.1289, a gap of **0.0239**. `calibration_curves.png`
+shows all three model curves sitting essentially on top of the book's and close
+to the diagonal, where the earlier passes had them bowed well below it.
+
+It is not perfect and this report will not say it is. The residual S-shape is
+still there and still in the overconfident direction: on the test half the
+baseline predicts 0.957 in its second-highest decile and realises 0.841, and
+**20.5 % of observations remain pinned at p ≥ 0.999 while settling in the money
+97.4 % of the time.** That is a much smaller error than the 40 %-at-77.3 % of
+the first evaluation, but it is the same sign, and a model that says "certain"
+one time in five had better be right more than 97.4 % of the time.
+
+### The calibrated arm LOSES to the baseline out of sample — and that is the vol regime
+
+On the fit half the calibrated table does its job: saturation 0.203 → **0.123**,
+Brier 0.1328 → **0.1315**, the best of the three. On the test half it goes the
+other way: saturation 0.205 → **0.232**, Brier 0.1359 → **0.1407**, the worst
+except for flat.
+
+That reversal is the 2.28x volatility gap of III.2, not a defect in the fit. An
+unconditional table fitted on the quiet half is simply too small on the loud
+one, so on the test days the calibrated arm is MORE overconfident than the
+baseline — whose EWMA at least conditions on each market's own realised
+movement and therefore tracks the regime. **The lesson is not that the table is
+wrong; it is that an unconditional sigma cannot survive a vol regime change,
+and this five-day window contains one.** II.4's suggestion — keep the EWMA's
+per-market conditioning and pin its LEVEL to the empirical table — is now
+supported by a second, independent piece of evidence.
+
+## III.4 The prediction: better calibration enlarges the loss. It HELD, in both directions.
+
+The standing pattern is that every fix so far has improved calibration and made
+the loss BIGGER, because a better-calibrated model quotes nearer 0.5, fills
+more, and every extra fill is taken at an edge that never covered the fee. This
+pass tests it twice, because the calibrated arm got better in sample and worse
+out of sample:
+
+| | saturation | Brier | fills | $/market |
+|---|---|---|---|---|
+| **FIT** baseline → calibrated | 0.203 → **0.123** (better) | 0.1328 → **0.1315** (better) | 15,394 → **20,777** (+35 %) | −4.595 → **−8.564** (loss +86 %) |
+| **TEST** baseline → calibrated | 0.205 → **0.232** (worse) | 0.1359 → **0.1407** (worse) | 23,079 → **19,994** (−13 %) | −4.482 → **−3.216** (loss −28 %) |
+
+Fills track calibration, and the loss tracks fills — in both directions, on the
+same run, with the same blocks. Better calibration bought more fills and a
+bigger loss; worse calibration bought fewer fills and a smaller one. **The
+test-half PnL "improvement" is not the model getting better. It is the model
+getting more overconfident and therefore trading less.** Anyone quoting
+−$3.22 as progress has the causality backwards.
+
+**Nothing here changes the sign.** All six arm/half cells lose money, all six
+pass every gate (sign survives all calendar periods, day-blocked CI excludes
+zero, deleting the ten best markets does not flip the sign), and all six CIs
+lie entirely below zero. The best cell in the whole table is −$3.22/market
+before the ~$0.13/market the 100 ms replay grid is known to flatter by.
+
+## III.5 What did NOT change
+
+Every standing caveat in sections 5 and II.5 holds. In addition, two new ones
+belong to this pass:
+
+* **The vol regime trend is the dominant confound on the test half.** Realised
+  movement rises 2.28x from the fit half to the test half and no calendar
+  split of these five days avoids it.
+* **50 of 1,389 market slots have no venue spot at all**, and 237 of
+  2026-08-21's 261 spot-covered markets have no oracle. The oracle-less ones
+  are dropped rather than scored as $0.00 markets (see `run.py`); the
+  spot-less ones blank part of three warm-up regions each, which is what
+  `MAX_MID_AGE_MS` exists to survive.

@@ -9,7 +9,7 @@ run contains both kinds of fill and `liquidity` on the ledger separates them.
 
 Quote parameters (e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10) are NOT
 optimised. They are a modest, round-numbered choice, stated here and in the
-report, and are not hill-climbed against this 6-day sample.
+report, and are not hill-climbed against this 5-day sample.
 """
 import json
 import os
@@ -29,10 +29,23 @@ from harness import paths                                  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-#: The only six days the spot panel covers (2026-08-18 is absent: a
-#: source-archive schema defect on that day, deliberate, not a bug here).
-SPOT_DAYS = ("2026-08-19", "2026-08-20", "2026-08-21",
-            "2026-08-22", "2026-08-23", "2026-08-24")
+#: THE ORACLE-OVERLAP WINDOW. `paths.SPOT_ORACLE_WINDOW` is the BTC/USD spot
+#: panel rebuilt over 2026-08-17..21, the days on which the book panel, the
+#: venue L1 capture and the Chainlink RTDS feed all exist at once. It replaces
+#: the old 08-19..24 sample because `fair.py` learns its basis from the oracle
+#: and returns NaN without one: on the old panel only 08-19 and 08-20 had a
+#: Chainlink line, so a six-day headline was really a two-day one. Two of
+#: these five days are partial at the ends, both from the source captures --
+#: the venue L1 stream starts 04:19 UTC on 08-17, and the oracle stops at
+#: 01:59 UTC on 08-21.
+SPOT_DAYS = ("2026-08-17", "2026-08-18", "2026-08-19",
+            "2026-08-20", "2026-08-21")
+
+#: Pre-open history handed to the signal blocks. `fair.py`'s basis halflife is
+#: 180 s and only converges because of this; `vol.py`'s realised-variance EWMA
+#: burns in across it rather than restarting at zero every 300 s. Measured, not
+#: assumed -- see `../2026-09-09-vol-fixed/warmup_check.py`.
+WARMUP_S = 900.0
 
 QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 
@@ -41,14 +54,15 @@ QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 #: takes the panel and the strikes from their defaults, so all three are read
 #: -- and the panel is the primary data behind every number here. Listing only
 #: the spot left the book these results were traded against unrecorded.
-INPUTS = (paths.PANEL, paths.STRIKES, paths.SPOT, paths.RTDS_BTC)
+SPOT_PATH = paths.SPOT_ORACLE_WINDOW
+INPUTS = (paths.PANEL, paths.STRIKES, SPOT_PATH, paths.RTDS_BTC)
 
-#: Chainlink's 1 s RTDS feed (harness.paths.RTDS_BTC) only covers
-#: 2026-08-14..2026-08-21, so only these two of the six SPOT_DAYS have a
-#: real Chainlink twap60 line available for the per-market detail plot.
-#: The four detail markets are drawn from this subset so every detail
-#: figure's BTC panel is populated.
-RTDS_COVERED_DAYS = ("2026-08-19", "2026-08-20")
+#: Chainlink's 1 s RTDS feed (harness.paths.RTDS_BTC) stops at 01:59 UTC on
+#: 2026-08-21, so these four of the five SPOT_DAYS carry a full-day twap60
+#: line for the per-market detail plot. The four detail markets are drawn
+#: from this subset so every detail figure's BTC panel is populated.
+RTDS_COVERED_DAYS = ("2026-08-17", "2026-08-18",
+                    "2026-08-19", "2026-08-20")
 
 SWEEP_SAMPLE_SIZE = 450
 SWEEP_SEED_RNG = 20260909
@@ -56,8 +70,22 @@ SWEEP_SEED_RNG = 20260909
 
 def main():
     t0 = time.time()
-    episodes = load_episodes(spot_path=paths.SPOT, days=SPOT_DAYS)
-    print(f"loaded {len(episodes)} episodes with spot in {time.time()-t0:.1f}s")
+    episodes = load_episodes(spot_path=SPOT_PATH, days=SPOT_DAYS,
+                             rtds_path=paths.RTDS_BTC,
+                             warmup=True, warmup_s=WARMUP_S)
+    # MARKETS WITHOUT AN ORACLE ARE DROPPED, NOT SCORED AS ZERO. `require_spot`
+    # filters on the venue feed and knows nothing about Chainlink, but
+    # `fair.py` returns NaN without an oracle -- so 2026-08-21's 237
+    # oracle-less markets would quote nothing, fill nothing and still land in
+    # `stats.headline` as 237 markets of exactly $0.00, dividing the loss by a
+    # larger number. The filter is knowable at decision time, which is what
+    # makes it a sample rule and not a selection effect.
+    n_loaded = len(episodes)
+    episodes = [ep for ep in episodes if np.isfinite(ep.chainlink).any()]
+    print(f"loaded {n_loaded} episodes with spot in {time.time()-t0:.1f}s; "
+          f"{len(episodes)} carry a settlement oracle "
+          f"({sum(e.has_warmup for e in episodes)} with a complete "
+          f"{WARMUP_S:.0f} s warm-up)")
 
     sample = Sample(require_spot=True)
     results = {}
@@ -124,6 +152,8 @@ def main():
 
     manifest = {
         "quote": QUOTE.__dict__,
+        "spot_path": SPOT_PATH,
+        "warmup_s": WARMUP_S,
         "spot_days": SPOT_DAYS,
         "sweep_sample_size": len(sweep_episodes),
         "sweep_sample_seed": SWEEP_SEED_RNG,

@@ -24,11 +24,10 @@ capture (see `harness.paths.RTDS_BTC`) is a real, continuous, 1 s-cadence
 Chainlink series and IS plotted as a line where it covers the market -- it is
 the exact settlement variable, so it sits on the same axis as the model's
 E[A] and the gap between them is the model's forecast error. That feed's
-coverage window (2026-08-14 through 2026-08-21) does not reach the back half
-of this evaluation's 6-day sample, so the four detail markets are drawn only
-from the covered days (08-19, 08-20); a market outside the window would show
-no Chainlink line and the panel says so rather than interpolating across the
-gap. The strike and settlement horizontals are independent of that coverage
+coverage window ends at 01:59 UTC on 2026-08-21, so the four detail markets
+are drawn only from the days it covers in full (08-17..08-20); a market
+outside the window would show no Chainlink line and the panel says so rather
+than interpolating across the gap. The strike and settlement horizontals are independent of that coverage
 -- they come from the boundary reports this project already verified against
 signed on-chain `ReportVerified` reports at median and max difference $0.00
 across 1,992 markets -- and are drawn regardless.
@@ -57,8 +56,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BUY_MARKER = dict(marker="^", color="tab:green", s=28, zorder=5, label="buy")
 SELL_MARKER = dict(marker="v", color="tab:red", s=28, zorder=5, label="sell")
 
-#: RTDS coverage is 2026-08-14 -> 2026-08-21 (see harness.paths.RTDS_BTC); of
-#: this evaluation's 6-day sample only these two days fall inside it.
+#: Fallback only. The days, the spot panel and the warm-up length are all
+#: read from `last_run_manifest.json`, so these figures are drawn against the
+#: same episodes the run priced; this constant is what an old manifest that
+#: predates those keys falls back to.
 RTDS_COVERED_DAYS = ("2026-08-19", "2026-08-20")
 
 
@@ -76,6 +77,16 @@ def _rtds_for_market(open_ts):
     comparator for the venue spot line: this panel is on a BTC/USD basis now,
     so the two should very nearly coincide, and a visible gap between them is
     a basis problem rather than a market one.
+
+    ON THE ORACLE'S OWN CLOCK, DELIBERATELY. This selects on `oracle_ms`, the
+    stamp Chainlink writes, whereas `harness.build.episodes.load_chainlink`
+    grids by `px_first_recv_ns`, when the price reached this vantage ~1.5 s
+    later. That difference is the whole reason the model reads receipts: a
+    decision may not use a price it has not been told. Here it is the right
+    choice for the opposite reason -- this line is not an input, it is the
+    ground truth being plotted, and the honest place to draw the settlement
+    variable is where it actually was. So the Chainlink line on these figures
+    runs ~1.5 s to the LEFT of what the model could see, by construction.
     """
     lo_ms, hi_ms = open_ts * 1000, (open_ts + 300) * 1000
     rtds = read_parquet(paths.RTDS_BTC,
@@ -350,8 +361,13 @@ def main():
     # every other caller here) then filtering in Python, exactly like
     # `run.py`'s own `detail_episodes = [ep for ep in episodes if ...]`,
     # avoids the pushdown path entirely.
-    candidate_eps = load_episodes(spot_path=paths.SPOT,
-                                  days=manifest.get("rtds_covered_days"))
+    spot_path = manifest.get("spot_path", paths.SPOT)
+    warmup_s = float(manifest.get("warmup_s", 0.0))
+    warmup = warmup_s > 0.0
+    candidate_eps = load_episodes(spot_path=spot_path,
+                                  days=manifest.get("rtds_covered_days"),
+                                  rtds_path=paths.RTDS_BTC,
+                                  warmup=warmup, warmup_s=warmup_s or 900.0)
     detail_eps = {ep.market_id: ep for ep in candidate_eps
                  if ep.market_id in chosen}
     for i, mkt in enumerate(chosen):
@@ -371,8 +387,10 @@ def main():
 
     plot_by_tte_bucket(combined_ledger, os.path.join(out_dir, "pnl_fills_by_tte.png"))
 
-    # winner_up per market, from the same 6-day spot sample used for the runs
-    episodes = load_episodes(spot_path=paths.SPOT, days=manifest["spot_days"])
+    # winner_up per market, from the same spot sample the runs used. No RTDS
+    # and no warm-up here on purpose: this only needs `winner_up`, which comes
+    # from the strikes, and loading either would cost minutes for nothing.
+    episodes = load_episodes(spot_path=spot_path, days=manifest["spot_days"])
     winner_up_by_market = {ep.market_id: (1.0 if ep.winner_up else 0.0)
                            for ep in episodes if ep.winner_up is not None}
     plot_calibration(combined_ledger, winner_up_by_market,

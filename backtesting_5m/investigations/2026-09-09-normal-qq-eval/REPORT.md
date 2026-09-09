@@ -1,5 +1,86 @@
 # normal_qq_basic — evaluation, 2026-09-09 (unified execution policy)
 
+> ## RE-RUN 2026-09-09, warm-up on — READ THIS SECTION FIRST
+>
+> Four upstream defects have been fixed since every number below was measured:
+> the spot panel was BTC/USDT rather than BTC/USD; `fair.py` now LEARNS the
+> venue-to-oracle basis instead of trusting the capture's quote, off a Chainlink
+> line gridded by RECEIPT rather than by the oracle's own stamp; `s` is shifted
+> onto the decision grid like every other Episode array; and Episodes now carry
+> a 900 s pre-open warm-up region, which this run turns on and `fair.py`'s
+> 180 s basis halflife now depends on.
+>
+> **Sample changed too, and not cosmetically.** The run is now on
+> `harness.paths.SPOT_ORACLE_WINDOW` (2026-08-17..21), the overlap of the book
+> panel, the venue L1 capture and the Chainlink feed. `fair.py` returns NaN
+> without an oracle, so markets with no oracle line are DROPPED rather than
+> scored as $0.00 markets: 1,391 loaded, **1,102 scored**.
+>
+> ### The calibration finding is no longer what it was
+>
+> | | previous | **this run** |
+> |---|---|---|
+> | model Brier, unconditional | 0.2167 | **0.1345** |
+> | book Brier, identical rows | 0.1331 | **0.1285** |
+> | model − book | **+0.0836** | **+0.0060** |
+> | p ≥ 0.999 fraction | 0.400 | **0.204** |
+> | ...and its realised frequency | 0.773 | **0.972** |
+> | worst decile gap | −0.332 | **−0.130** |
+>
+> The old text below — "the model is systematically overconfident", 40 % of
+> observations pinned at p = 1.000 settling in the money 77 % of the time — was
+> true of the model it measured and is **no longer true of this one**. The
+> model has closed to within 0.006 Brier of the book. `calibration.png` for
+> this run shows the at-fill-time deciles lying on the diagonal, where the
+> previous run had the top decile at 0.98 predicted against 0.67 realised.
+>
+> **It is still not perfectly calibrated and this report does not claim it is.**
+> The residual error has the same sign as before: 20.4 % of observations still
+> sit at p ≥ 0.999 and settle in the money 97.2 % of the time, and the second
+> highest decile predicts 0.952 against a realised 0.822.
+>
+> ### The loss did not go away
+>
+> | | previous run (00:28 today) | **this run** |
+> |---|---|---|
+> | markets | 1,553 | 1,102 |
+> | fills | 54,717 | 38,473 |
+> | c/share (`pnl_net`) | −1.483 | **−1.299** |
+> | $/market (`pnl_net`) | −5.224 | **−4.534** |
+> | day-blocked CI ($/mkt) | — | **[−6.717, −2.531]** |
+> | gates | pass | **pass** |
+>
+> Per-period means −4.59 / −4.35 / −7.49 $/mkt, the CI excludes zero, and
+> deleting the ten best markets makes it worse (−4.534 → −4.866). The two runs
+> are on different samples and different day counts, so the levels are not
+> strictly comparable; the sign, the robustness and the order of magnitude are.
+> **Fixing the model's calibration did not make it profitable.** It is closer
+> to the book's own prices, and being closer to the book's prices is exactly
+> what leaves nothing to trade against after fees.
+>
+> Maker/taker split for this run (`split_headline.py`, markout-based, seed 0):
+>
+> | arm | fills | markets touched | mean markout (c/share) | mean fee (c/share) | net c/share | $/market (÷1,102) |
+> |---|---|---|---|---|---|---|
+> | maker | 14,039 | 1,087 | **−2.550** | −0.269 (paid to us) | −2.280 | −2.905 |
+> | taker | 24,434 | 1,101 | **−0.491** | +1.254 (paid by us) | −1.745 | −3.870 |
+> | overall | 38,473 | 1,101 | −1.242 | +0.698 | −1.941 | −6.775 |
+>
+> Latency ladder (450-market subsample, seed 20260909, single sweep seed 0),
+> c/share: **−0.976 / −0.976 / −1.015 / −1.049 / −1.075** at 0 / 100 / 200 /
+> 250 / 500 ms. Fill-arm range: optimistic −0.976, adverse_lag −0.976,
+> penetration −1.041. Both ranges are narrow and every arm's sign matches.
+>
+> The sigma investigation next door
+> (`../2026-09-09-vol-fixed/REPORT.md`, PART III) runs the same blocks with
+> three vol arms on the same panel and finds the same thing from the other
+> side, including a direct two-directional test of "better calibration, bigger
+> loss" that the pattern passes.
+>
+> Everything below this box is the previous evaluation, kept verbatim for the
+> before/after. Its calibration section is superseded by the table above.
+
+
 Blocks copied from `Gambling104/investigations/2026-09-09_normal_qq_basic/`
 (`fair.py`, `vol.py`, `f.py`, `link.py`), unchanged. Exact versions are pinned
 by sha256 in each run's `manifest.json`.
