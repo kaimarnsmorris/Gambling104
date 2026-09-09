@@ -27,13 +27,26 @@ DEFAULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "blocks", "defaults")
 
 
-def resolve_slots(investigation_dir):
-    """slot -> path. Investigation folder wins; defaults fill the rest."""
+def resolve_slots(investigation_dir, model_dir=None):
+    """slot -> path. Investigation wins, then the model, then defaults.
+
+    A model directory holds one canonical block set that many investigations
+    share; shadowing still works, so forking one block is a one-file act.
+    Provenance is unchanged -- write_manifest still freezes the resolved files
+    with their sha256s into the run folder.
+    """
     resolved = {}
     for slot in SLOTS:
         local = os.path.join(investigation_dir, f"{slot}.py")
-        resolved[slot] = local if os.path.exists(local) else os.path.join(
-            DEFAULTS_DIR, f"{slot}.py")
+        if os.path.exists(local):
+            resolved[slot] = local
+            continue
+        if model_dir:
+            in_model = os.path.join(model_dir, f"{slot}.py")
+            if os.path.exists(in_model):
+                resolved[slot] = in_model
+                continue
+        resolved[slot] = os.path.join(DEFAULTS_DIR, f"{slot}.py")
     return resolved
 
 
