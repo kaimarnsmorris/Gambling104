@@ -9,10 +9,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt        # noqa: E402
 import numpy as np                      # noqa: E402
+import pandas as pd                     # noqa: E402
 
-#: Liquidity.MAKER's int value, duplicated rather than imported so this
-#: module never needs a resolved fee block to draw a maker/taker split.
-LIQ_MAKER = 1
+from harness.blocks.defaults.fees import Liquidity
+
+#: Imported from the enum, never hardcoded -- a hardcoded `1` here once
+#: matched `Liquidity.TAKER`, silently swapping every maker/taker split.
+LIQ_MAKER = int(Liquidity.MAKER)
 
 
 def cumulative_pnl(markets, path, *, gross=True, title="Cumulative PnL"):
@@ -115,54 +118,48 @@ def pnl_by_tte(ledgers, path, bucket_s=30.0):
     plt.close(fig)
 
 
-def _default_link(z):
-    """The harness's default logistic z -> p, for a generic calibration read.
-
-    A run whose investigation overrides `link.py` should compose its own
-    calibration figure against that resolved block, the way
-    `plot_report.py::plot_calibration` does -- this generic version exists so
-    a sweep can be eyeballed without wiring provenance through the report
-    module.
-    """
-    z = np.asarray(z, dtype="float64")
-    out = np.empty_like(z)
-    out[z > 40.0] = 1.0
-    out[z < -40.0] = 0.0
-    mid = (z >= -40.0) & (z <= 40.0)
-    out[mid] = 1.0 / (1.0 + np.exp(-z[mid]))
-    return out
-
-
-def calibration(ledgers, path, n_buckets=10):
-    """Calibration: predicted fair_p (default logistic link) vs realised
-    settlement frequency, one series per run.
+def calibration(ledgers, markets, path, n_buckets=10):
+    """Calibration: predicted `fair_p` at fill time vs realised settlement
+    frequency, one series per run, over ALL fills (not just the last ~10 s).
 
     Generalised from `plot_calibration`, which took an external
-    `winner_up_by_market` mapping built from episode data. Here the outcome
-    is read straight off the ledger's own `mid_t10` / `markout_settled`
-    columns: a fill markout out to settlement (`markout_settled`) records
-    the realised UP/DOWN outcome (1.0/0.0) in `mid_t10` directly, so no
-    external episode lookup is needed.
+    `winner_up_by_market` mapping built from episode data and re-derived
+    `fair_p` from `z` by resolving the investigation's own `link.py`. Neither
+    is available to a generic, multi-run report function, so both are read
+    straight off the artefacts instead:
+
+    - `fair_p` is recorded on the fill row directly (`harness.core.loop`
+      already computes it as `link(z_i)` beside `z_i`; it is now passed into
+      `Ledger.record_fill` rather than discarded), so no link needs
+      re-resolving here -- and, unlike re-deriving it from `z` with a
+      hardcoded default link, this is exact for whatever link an
+      investigation actually used.
+    - the outcome is `markets["winner_up"]` (now recorded by `run_episode`),
+      joined onto the ledger by `("run", "market_id")`. Earlier this reused
+      the ledger's own settlement-markout column, which only covers fills in
+      roughly the final 10 s of a 300 s market -- an unrepresentative slice.
+      Joining to `markets` gives every fill the market's actual outcome.
     """
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot([0, 1], [0, 1], color="0.5", lw=1.0, ls="--", label="perfect")
 
-    for label, g in ledgers.groupby("run", sort=True):
-        l = g[g.get("markout_settled", False) == True].dropna(  # noqa: E712
-            subset=["z", "mid_t10"])
+    outcomes = markets[["run", "market_id", "winner_up"]].drop_duplicates()
+    joined = ledgers.merge(outcomes, on=["run", "market_id"], how="inner")
+
+    for label, g in joined.groupby("run", sort=True):
+        l = g.dropna(subset=["fair_p", "winner_up"])
         if not len(l):
             continue
-        predicted = _default_link(l["z"].to_numpy())
-        realised = l["mid_t10"].to_numpy()
+        predicted = l["fair_p"].to_numpy()
+        realised = l["winner_up"].astype("float64").to_numpy()
         try:
-            import pandas as pd
             decile = pd.qcut(predicted, n_buckets, duplicates="drop")
             grp = pd.DataFrame({"predicted": predicted, "realised": realised,
                                "decile": decile}).groupby(
                 "decile", observed=True).agg(
                 predicted=("predicted", "mean"),
                 realised=("realised", "mean"), n=("realised", "size"))
-        except (ValueError, ImportError):
+        except ValueError:
             continue
         ax.scatter(grp["predicted"], grp["realised"],
                   s=grp["n"] / grp["n"].max() * 200 + 20, zorder=5,

@@ -77,7 +77,7 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
                 order = next(o for o in live if o.order_id == fl.order_id)
                 ledger.record_fill(
                     ep, fl, fee, q_before, q, eff_bid, eff_ask, s_i, sigma_i,
-                    z_i, order.latency_ms,
+                    z_i, fair_p, order.latency_ms,
                     (i - order.live_from) * 100.0, seed)
                 live = [o for o in live if o.order_id != fl.order_id]
 
@@ -146,4 +146,5 @@ def run_episode(ep, blocks, params, execn, seed=0, emit_ticks=False):
         "shares": sum(f["shares"] for f in ledger.fills),
         "n_fills": len(ledger.fills), "max_abs_q": max_abs_q,
         "settled": settled, "has_spot": bool(ep.has_spot.any()),
+        "winner_up": ep.winner_up,
     }

@@ -50,7 +50,7 @@ class Ledger:
         self.ticks = []
 
     def record_fill(self, ep, fill, fee_usd, q_before, q_after,
-                    eff_bid, eff_ask, s_i, sigma_i, z_i, latency_ms,
+                    eff_bid, eff_ask, s_i, sigma_i, z_i, fair_p, latency_ms,
                     order_age_ms, seed):
         mid_t10, dq, settled = markout(ep, fill.idx, fill.side, fill.price)
         self.fills.append({
@@ -58,7 +58,7 @@ class Ledger:
             "t_ms": fill.idx * 100,
             "side": int(fill.side), "liquidity": int(fill.liquidity),
             "shares": fill.shares, "price": fill.price, "fee_usd": fee_usd,
-            "s": s_i, "sigma": sigma_i, "z": z_i,
+            "s": s_i, "sigma": sigma_i, "z": z_i, "fair_p": fair_p,
             "eff_bid": eff_bid, "eff_ask": eff_ask,
             "book_bid": float(ep.bid[fill.idx]),
             "book_ask": float(ep.ask[fill.idx]),

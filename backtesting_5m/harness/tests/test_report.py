@@ -57,3 +57,10 @@ def test_run_no_longer_accepts_a_plots_flag():
     from harness.core.config import Output
     assert not hasattr(Output(), "plots"), (
         "plotting belongs in harness.report, not in the engine")
+
+
+def test_maker_and_taker_are_not_inverted():
+    """A hardcoded enum value once had these backwards, so pin it."""
+    from harness.blocks.defaults.fees import Liquidity
+    from harness.report.figures import LIQ_MAKER
+    assert LIQ_MAKER == int(Liquidity.MAKER) == 0
