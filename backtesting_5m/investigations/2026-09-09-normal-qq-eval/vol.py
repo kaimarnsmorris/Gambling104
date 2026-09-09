@@ -47,6 +47,28 @@ different vol block. Before MIN_UPDATES returns have landed the estimate is
 NaN rather than a guess -- the loop declines to quote on a non-finite sigma, so
 the model stands aside during warm-up instead of pricing off one observation.
 
+THE EWMA NOW BURNS IN ON THE PRE-OPEN REGION. `RV_HALFLIFE_S` is 100 s
+against a 300 s window, so an EWMA seeded at zero on every market open spent
+a third of each episode climbing out of its own seed and reported a variance
+biased low for most of the window it was scored on. `Episode` carries
+`warmup_s` seconds of history (`harness/core/episode.py`); this block runs
+the identical recursion over it first, on the same absolute bucket clock, so
+`dt` across the open is the real elapsed time and not a restart. At 900 s of
+warm-up that is nine halflives: the zero seed's weight at the open is
+2^-9 < 0.2 %.
+
+Nothing about the FORM changed -- same rate, same alpha, same `tau_eff`, same
+gate. Only the history the recursion has seen.
+
+WHAT DELIBERATELY DID NOT CHANGE is the MIN_UPDATES gate, which still counts
+IN-WINDOW observations only, so the quoting window is bit for bit what it was
+before warm-up existed and the only variable that moved is the EWMA's history.
+It costs almost nothing to leave: measured over the 568 markets of
+2026-08-19..20, the gate clears at in-window index 6 (0.6 s) at the median and
+index 8 at the 99th percentile, 0.34 % of the window on average. This block is
+also kept identical to `../2026-09-09-vol-fixed/vol_baseline.py`, which is the
+control arm of the sigma investigation -- the two must not drift apart.
+
 The observation scan is duplicated from `fair.py` on purpose; see the note
 there.
 """
@@ -70,27 +92,64 @@ def effective_tte(tau, window=TWAP_WINDOW_S):
     return tau ** 3 / (3.0 * window * window)
 
 
+def _scan(state, spot, age, offset):
+    """Advance the realised-variance EWMA over one contiguous block.
+
+    `offset` is the block's first bucket measured from the market open, so
+    the warm-up region passes -warmup_n and the market itself passes 0; `dt`
+    and `prev` are on that absolute clock and the seam is not a restart.
+    Returns (rv_ewm_var, prev_abs_index).
+    """
+    rv_ewm_var, prev = state
+    bucket_s = BUCKET_MS / 1000.0
+    for j in range(spot.shape[0]):
+        if age[j] == 0.0 and np.isfinite(spot[j]) and spot[j] > 0.0:
+            k = offset + j
+            if prev is not None:
+                dt = (k - prev[0]) * bucket_s
+                log_ret = math.log(float(spot[j]) / prev[1])
+                r2_per_sec = log_ret * log_ret / dt
+                alpha = 1.0 - math.exp(-dt / RV_HALFLIFE_S)
+                rv_ewm_var = alpha * r2_per_sec + (1.0 - alpha) * rv_ewm_var
+            prev = (k, float(spot[j]))
+    return rv_ewm_var, prev
+
+
 def precompute(ep):
     """sigma_T at each decision index. NaN until the EWMA has warmed up."""
     spot = np.asarray(ep.spot, dtype="float64")
     age = np.asarray(ep.spot_age_ms, dtype="float64")
     bucket_s = BUCKET_MS / 1000.0
 
+    # Pre-open burn-in. History only: `updates` is not touched here, so the
+    # gate below still counts in-window observations exactly as it did.
+    rv_ewm_var, prev_state = 0.0, None
+    if ep.warmup_n:
+        rv_ewm_var, prev_state = _scan(
+            (0.0, None),
+            np.asarray(ep.warmup_spot, dtype="float64"),
+            np.asarray(ep.warmup_spot_age_ms, dtype="float64"),
+            -ep.warmup_n)
+
     out = np.full(len(ep), np.nan)
-    rv_ewm_var = 0.0
     updates = 0
     prev = -1
+    prev_px = None
+    if prev_state is not None:
+        prev, prev_px = prev_state          # absolute (negative) index
 
     for i in range(len(ep)):
         if age[i] == 0.0 and np.isfinite(spot[i]) and spot[i] > 0.0:
-            if prev >= 0:
+            if prev >= 0 or prev_px is not None:
                 dt = (i - prev) * bucket_s
-                log_ret = math.log(float(spot[i]) / float(spot[prev]))
+                log_ret = math.log(float(spot[i]) / prev_px)
                 r2_per_sec = log_ret * log_ret / dt
                 alpha = 1.0 - math.exp(-dt / RV_HALFLIFE_S)
                 rv_ewm_var = alpha * r2_per_sec + (1.0 - alpha) * rv_ewm_var
-                updates += 1
+                if prev >= 0:
+                    updates += 1
             prev = i
+            prev_px = float(spot[i])
 
         if updates >= MIN_UPDATES:
             ewm_rv = math.sqrt(rv_ewm_var * SECONDS_PER_YEAR)

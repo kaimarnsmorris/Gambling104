@@ -42,6 +42,21 @@ blocks decline to quote on the same indices. The variable under test is the
 LEVEL of sigma; leaving the quoting window free to move as well would confound
 them.
 
+AND IT READS NO PRE-OPEN HISTORY, for the same reason. Episodes now carry a
+warm-up region and `vol_baseline.py` burns its EWMA in across it; this block
+has no state to burn in, so there is nothing here for the region to change.
+The MIN_UPDATES gate deliberately still counts IN-WINDOW observations in all
+three arms -- see the note in `vol_baseline.py` for the measurement that says
+it costs 0.34 % of the window to leave it alone.
+
+WHAT THE WARM-UP DID CHANGE, indirectly and importantly: the table below is
+refitted against a `fair.py` whose basis now runs a 180 s halflife burnt in
+over 900 s of history. That model's forecast error is a different, smaller
+quantity than the cold-start one's -- the near-expiry floor fell from ~0.9 bp
+to ~0.26 bp -- so the numbers in `sigma_fit.json` are not comparable across
+that change. The table is conditional on the panel AND on the fair block;
+refit it whenever either moves.
+
 WHAT THIS BLOCK CANNOT FIX, and the report must not pretend otherwise: it can
 only widen around a level error, never move it. On the corrected BTC/USD panel
 the residual bias is small (-0.71 bp on the fit half) and changes sign across
