@@ -9,6 +9,14 @@ PANEL = os.path.join(DATA, "book_5m_100ms.parquet")
 STRIKES = os.path.join(DATA, "strikes_5m.parquet")
 RESULTS = os.path.join(DATA, "results")
 SPOT = os.path.join(DATA, "spot_5m_100ms.parquet")
+
+#: The same panel with `spot` on a BTC/**USD** basis -- the venue's
+#: BTC/USDT mid less the capture's `usdt_basis`. `SPOT` above is the
+#: legacy BTC/USDT panel, biased ~+$43 against the BTC/USD Chainlink
+#: feed these markets actually settle on; see
+#: harness/build/spot_5m_100ms.py. Kept as a separate constant while
+#: readers migrate -- SPOT will be repointed here once they have.
+SPOT_USD = os.path.join(DATA, "spot_5m_100ms_usd.parquet")
 FAIR_DIR = os.path.join(DATA, "fair")
 INVESTIGATIONS = os.path.join(PROJECT, "investigations")
 
