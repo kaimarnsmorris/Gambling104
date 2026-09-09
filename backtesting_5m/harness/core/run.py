@@ -3,6 +3,7 @@ import json
 import os
 from dataclasses import asdict, is_dataclass, replace
 
+import numpy as np
 import pandas as pd
 
 from harness import paths
@@ -150,6 +151,32 @@ def check_require(sample):
                 f"via ep.has_spot.")
 
 
+def _frozen_book(ep, max_distinct):
+    """The venue-maintenance signature: a book that never moved, from one feed.
+
+    Both halves are needed and neither is sufficient. A frozen book alone
+    would be a reasonable test, but stating it with the source count is what
+    makes the threshold safe: across 7,111 markets no TWO-source market has
+    fewer than 11 distinct mids, so the conjunction cannot reach a real
+    market however the panel changes. And single-source alone would drop 32
+    markets whose books move perfectly well -- one venue quoting is not the
+    same as nobody quoting.
+
+    Returns False for an episode with no usable book at all: that is a
+    coverage question, and `require` already answers it. Deciding it twice,
+    differently, is how a market ends up dropped for the wrong reason.
+    """
+    mid = np.asarray(ep.mid, dtype="float64")
+    finite = np.isfinite(mid)
+    if not finite.any():
+        return False
+    src = np.asarray(ep.n_src, dtype="float64")
+    seen = src[np.isfinite(src)]
+    if seen.size and seen.max() > 1:
+        return False
+    return len(np.unique(np.round(mid[finite], 3))) <= max_distinct
+
+
 def select_episodes(episodes, sample):
     """(kept, dropped_counts). Drop counts are reported in summary.json so a
     require clause that halves the sample is visible rather than inferred."""
@@ -164,6 +191,10 @@ def select_episodes(episodes, sample):
         if sample.days and ep.day not in sample.days:
             continue
         if sample.markets and ep.market_id not in sample.markets:
+            continue
+        if sample.drop_frozen_book and _frozen_book(
+                ep, sample.frozen_book_max_distinct_mid):
+            dropped["frozen_book"] = dropped.get("frozen_book", 0) + 1
             continue
         if sample.require_spot and not ep.has_spot.any():
             dropped["spot"] = dropped.get("spot", 0) + 1

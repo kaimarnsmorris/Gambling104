@@ -1,5 +1,24 @@
 # Making the QQ model profitable — first pass
 
+> **CORRECTION (all numbers below are the clean re-run).** The first version
+> of this report found a profitable configuration. It was a venue outage.
+> On 2026-08-19, through 04:05-05:35 and 09:05-10:45, the exchange published
+> bid 0.50 / ask 0.51 unchanged for all 2,940 buckets of 37 consecutive
+> markets, from one quote source instead of two, while BTC moved normally.
+> Those 36 tradeable markets returned **+$44.94 each** against **−$0.48** on
+> the other 1,066 — the whole of the apparent edge.
+>
+> `Sample.drop_frozen_book` now removes them by default and everything here
+> has been re-measured. **Three conclusions reversed:** the model no longer
+> beats the book at any horizon, the book's tail bias mostly disappears, and
+> the second quote rule no longer beats the first. The findings that survived
+> are in §3, §4 and §5, and they are the ones worth acting on.
+>
+> Credit for spotting it goes to the human partner, not to the gates: the
+> `delete_top_10` gate PASSED on the contaminated result, because 36 markets
+> are not 10.
+
+
 **Sample:** 1,102 markets, 2026-08-17..21, the three-way overlap where the
 book panel, the venue spot build and the Chainlink capture all exist.
 **Baseline arm:** `e_p=0.02, rpl_p=0.002, e_z=0.3`, one seed.
@@ -247,3 +266,73 @@ curve before believing the mean.
 last-minute window is a genuinely better place to trade, both robustly. The
 strategy is still not profitable -- it has one good day in five and no
 evidence of an edge that persists.
+
+---
+
+## 10. Re-measured with the outage removed
+
+Sample is now 1,065 markets (`dropped: chainlink 237, frozen_book 38,
+spot 51`). Baseline arm: **−2.477/market, −1.806 c/share**.
+
+**Survived unchanged.** §3's overconfidence (predicted 0.024 against 0.138
+realised; 0.850 against 0.737), §4's sigma ratio (2.68 overall, 2.4–2.5 at
+every tte past 30 s), and §5's absence of any location edge — rmse(s) 63.78
+against **63.67 for the raw uncorrected venue mid** and 64.43 for carrying
+the oracle. These are the real findings.
+
+**Reversed — §8's window edge.** The model does not beat the book anywhere:
+
+| tte (s) | model | book | gap | gap before |
+|---|---|---|---|---|
+| [0,30) | 0.0156 | 0.0063 | +0.0093 | +0.0014 |
+| **[30,60)** | 0.0323 | 0.0279 | **+0.0044** | **−0.0025** |
+| [60,120) | 0.0867 | 0.0795 | +0.0072 | +0.0028 |
+| [120,240) | 0.1676 | 0.1543 | +0.0132 | +0.0103 |
+| [240,300) | 0.2267 | 0.2155 | +0.0112 | +0.0093 |
+
+The one horizon where the model appeared to forecast better than the market
+was the frozen book scoring badly at 0.505. The sign flips. **The model never
+beats the book.**
+
+**Reversed — §7's book bias.** The book's error in (0, 0.1] goes from +0.0142
+to **+0.0003**: essentially perfect calibration in the longshot bucket once
+the outage is out. There was no favourite-longshot bias to harvest.
+
+**Reversed — §9's quote rule.** B no longer beats A anywhere:
+
+| arm | pnl/market | c/share | before |
+|---|---|---|---|
+| A, last 60 s | **−0.460** | −1.132 | +0.309 |
+| B, 30–60 s | −0.493 | −1.830 | +0.972 |
+| B, last 60 s | −0.521 | −1.510 | +1.005 |
+| A, all 300 s | −6.884 | −1.647 | −5.935 |
+| B, all 300 s | −6.374 | −1.927 | −4.696 |
+
+B's harder inventory brake and wider spread were better at harvesting the
+frozen book, not better at trading. Twelve paired arms all moved the same
+way, which is why the consistency looked convincing.
+
+**Partly survived — the window.** [0,60) is still far better than [0,300)
+(−0.46 against −6.88), monotone in width as before. But §8's explanation is
+dead, so the remaining one is mechanical rather than predictive: less time
+quoting is less time accumulating adverse selection. That is cost avoidance,
+not edge.
+
+### Where it now stands
+
+Best arm −0.460/market, and its bootstrap CI is **[−0.662, −0.198]** — the
+loss is now the statistically significant result. The QQ model loses in every
+configuration tested, and the reasons are §3–§5: it is overconfident by a
+factor of ~2.4, its link has the wrong tail shape, and its location estimate
+is no better than the raw venue mid.
+
+### What this changes about method
+
+The `delete_top_10` gate passed on the contaminated result. It is built for
+ten lucky markets and this was thirty-six correlated ones, so it could not
+see it. `sign_survives_periods` did fail — and was overruled by a plausible
+story about the last minute, which is the failure mode worth naming.
+
+Two cheap defences now in place: the filter itself, and the cumulative-PnL
+curve, which showed the step instantly when no summary statistic did. Draw
+the curve before believing the mean.

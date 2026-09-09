@@ -71,6 +71,32 @@ class Sample:
     #: working; prefer require=("spot",).
     require: tuple = ()
 
+    #: Drop markets whose L1 never moved AND which never had more than one
+    #: quote source: the venue-maintenance signature. ON BY DEFAULT, because
+    #: including them does not degrade a result, it manufactures one.
+    #:
+    #: On 2026-08-19 the venue sat in maintenance through 04:05-05:35 and
+    #: 09:05-10:45, publishing bid 0.50 / ask 0.51 unchanged for all 2,940
+    #: buckets of 37 consecutive markets while BTC moved normally. A model
+    #: quoting against a frozen book prints money that was never available:
+    #: those 36 markets returned +$44.94 EACH against -$0.48 on the other
+    #: 1,066, and single-handedly turned a -0.48/market strategy into a
+    #: +1.01/market one.
+    #:
+    #: Across the whole panel (7,111 markets, 26 days) the signature appears
+    #: on 8 days and 253 markets, and it separates perfectly: every frozen
+    #: market is single-source, no two-source market has fewer than 11
+    #: distinct mids, and the 32 single-source markets with genuinely moving
+    #: books (up to 144 distinct mids) are kept. The conjunction is what
+    #: makes it safe -- either test alone would either miss markets or drop
+    #: real ones.
+    drop_frozen_book: bool = True
+
+    #: A market whose mid takes this many distinct values or fewer over the
+    #: whole 300 s is frozen. Two-source markets bottom out at 11, so 10
+    #: cannot reach one even before the single-source condition applies.
+    frozen_book_max_distinct_mid: int = 10
+
 
 @dataclass(frozen=True)
 class Output:
