@@ -1,7 +1,8 @@
 ---
 title: A block-composed backtesting harness for the BTC up/down 5 m book
 date: 2026-09-09
-status: design — approved in brainstorming, not yet implemented
+status: implemented; reconciled against the code 2026-09-09
+superseded_in_part: 2026-09-09-stream-registry-and-module-design.md
 related:
   - ../../../data/README.md
   - Gambling102 docs/strategy/2026-09-05-final-model-architecture.md
@@ -9,6 +10,17 @@ related:
 ---
 
 # Backtesting harness — design
+
+> **Superseded in part by `2026-09-09-stream-registry-and-module-design.md`.**
+> That spec replaces four things described below: tick data is referenced
+> through the **stream registry** and a `streams=` run parameter rather than by
+> hard-coded paths and hand-added `Episode` fields; an investigation names a
+> shared **model directory** instead of copying block files into itself (run
+> folders still freeze their own copies, so provenance is unchanged); research
+> lives at the repository root under `../investigations` and `../models`, not
+> inside `backtesting_5m/`; and **plotting has left the harness** for the
+> separate, optional `harness.report` module, which reads run folders. The rest
+> of this document still describes the code.
 
 ## The question this answers
 
@@ -70,14 +82,30 @@ tau = 280 s in `l1_queue_decay/`, and cannot be computed without them.
 Resamples venue L1 onto the panel's `(open_ts, t_ms)` grid, same 100 ms
 buckets, same first-observation-in-bucket rule as `s04_panel.py`.
 
-**Clock gate — the build refuses to write without it.** The panel's captures
-were corrected onto polydata's vantage; `stream_venue_l1` is a different host
-with an independent, drifting clock. A per-day venue-to-polydata offset is
-measured the way `s03b_vantage.py` measures capture offsets, written to
-`results/venue_vantage_offsets.tsv`, and the build **fails loudly** if any day
-lacks one. Rationale: beta(tau,h) collapses to zero inside tau = 13 s, so a
-silent 50 ms misalignment is not cosmetic — it is the difference between signal
-and noise at exactly the horizons under test.
+**The clock offset is a declared assumption, not a measurement.** The panel's
+captures were corrected onto polydata's vantage; `stream_venue_l1` is a
+different host with an independent, drifting clock. That offset **cannot be
+measured from these two streams**: the panel records receipt of Polymarket book
+updates and the venue feed records receipt of Binance/Coinbase/OKX/Bybit
+updates on a different host, so they share no event to align on, and
+cross-correlating them would confound the offset with the spot-to-book response
+lag this harness exists to study. The function that tried to measure it is
+gone.
+
+So `build(..., offset_s=)` takes a **configured** offset, defaulting to 0.0 s.
+`require_offset` gates it per day — it raises on an absent or non-finite
+offset, and on one above `MAX_PLAUSIBLE_OFFSET_S = 1.0` s, which is a broken
+clock rather than a vantage difference — and the offset actually used is
+written per day to `results/venue_vantage_offsets<suffix>.tsv`. This repo's own
+same-book inter-host drift measurements bound the plausible range at
+**0-74 ms**, and every run stamps the admission into `summary["caveats"]`:
+see `CLOCK_OFFSET_NOTE` and `_clock_offset_caveat` in `harness/core/run.py`,
+which reads that TSV and says outright when no offset is recorded for the days
+the run covered. Rationale for gating it at all: beta(tau,h) collapses to zero
+inside tau = 13 s, so a silent 50 ms misalignment is not cosmetic — it is the
+difference between signal and noise at exactly the horizons under test. Every
+spot-derived number is conditional on the assumption and must be swept over
+that band the way latency and fill optimism are.
 
 **Coverage is asymmetric and must be reported.** Venue L1 begins 2026-08-17;
 the book panel begins 2026-08-14. Markets before the spot window are retained
@@ -94,11 +122,18 @@ One immutable object per market, arrays of length `N = 3000`:
 | `t_ms` | 0 … 299900 |
 | `has_book`, `book_age_ms` | observation present; ms since the last one |
 | `bid, ask, mid` | UP token L1, probability |
-| `n_src, src_spread_c` | corroboration, from the panel |
-| `spot_*`, `spot_age_ms`, `has_spot` | venue L1 fields on the grid |
-| `s` | fair value, USD, from the export (NaN where absent) |
+| `n_src` | capture corroboration, from the panel |
+| `spot`, `spot_age_ms`, `has_spot` | venue L1 on the grid, **USD** (the USDT basis already subtracted) |
+| `spot_usdt`, `chainlink`, `chainlink_age_ms` | the raw USDT mid and the settlement oracle, same grid |
+| `s`, `sigma` | fair value (USD) and vol, filled by the `fair` / `vol` blocks |
 | `strike`, `settle`, `winner_up` | settlement truth |
-| `day`, `period` | for blocked splits and CIs |
+| `day` | for blocked splits and CIs |
+| `streams` | registered streams, `{name: {col, age_ms, has}}` — see the registry spec |
+
+There is also an optional **pre-open warm-up** region (`warmup_*`,
+`has_warmup`) on the same grid and under the same causality shift, for
+`precompute` only: `len(ep)` still reports 3,000 so a loop written against
+`range(len(ep))` cannot reach into it.
 
 **Nothing is forward-filled.** A bucket no capture observed has no book; the age
 counters grow across it. The engine refuses to fill against a book older than
@@ -124,24 +159,27 @@ end-to-end.
 
 ### 2.1 Slots and resolution
 
-A block *slot* is a filename. Resolution for each slot, in order:
+A block *slot* is a filename. Resolution for each slot, in order
+(`provenance.resolve_slots`):
 
 1. the investigation folder
-2. `harness/blocks/defaults/`
+2. the **model directory**, when the run named one (`backtest(model=...)`)
+3. `harness/blocks/defaults/`
 
 Nothing is registered and nothing is named. Writing `link.py` in your
-investigation folder *is* the override.
+investigation folder *is* the override, and it shadows the model directory the
+same way.
 
 | slot | file | contract |
 |---|---|---|
 | fair | `fair.py` | `precompute(ep) -> s[N]` (USD) |
 | vol | `vol.py` | `precompute(ep) -> sigma[N]` |
-| f | `f.py` | `standardise(s, strike, sigma) -> z`; bound to `strike` and `sigma[i]` per tick, so the quote algebra calls it as `f(.)` on the level alone |
+| f | `f.py` | `standardise(level, strike, sigma) -> z`, called per tick with the episode's `strike` and `sigma[i]` |
 | link | `link.py` | `link(z) -> p` in (0,1) |
-| quote | `quote.py` | `quotes(s_i, q, params) -> (eff_bid, eff_ask)`, theoretical and *not* snapped to the cent grid — see §3.1 |
-| execution | `execution.py` | order policy — post / cross / cancel / gate |
-| fill | `fill.py` | whether a live order fills, and at what price |
-| fees | `fees.py` | `charge(...) -> usd`, negative for rebates |
+| quote | `quote.py` | `quotes(s_i, q, strike, sigma_i, params, standardise, link) -> (eff_bid, eff_ask)`, theoretical and *not* snapped to the cent grid — see §3.1 |
+| execution | `execution.py` | `decide(i, eff_bid, eff_ask, q, ep, live_orders, execn, params) -> (to_place, to_cancel)` — post / cross / cancel / gate |
+| fill | `fill.py` | `resolve(orders, ep, i, params) -> [Fill]` — whether a live order trades, and at what price |
+| fees | `fees.py` | a `FeeSchedule` whose `charge(liquidity, shares, p) -> usd` is negative for rebates |
 
 `fair` and `vol` are **SignalBlocks**: vectorised, stateless, precomputed per
 episode. `quote`, `execution`, `fill` are per-tick and inventory-dependent.
@@ -187,13 +225,27 @@ Mapping to the shipped chain `E[A] -> z -> p = NIG_sf(z; zeta)`: `s` is `E[A]`,
 ### 3.1 Loop
 
 ```python
-for i in range(N):
-    eff_bid, eff_ask = quote(s[i], q, params)
-    actions = execution.decide(i, eff_bid, eff_ask, q, book[i], state)
-    fills   = fill.resolve(actions, ep, i, latency.draw(rng), state)
-    q, cash = apply(fills, fees, ledger)
+for i in range(len(ep)):                      # harness/core/loop.py
+    live = [o for o in live if not o.is_dead(i)]
+    eff_bid, eff_ask = quotes(s[i], q, ep.strike, sigma[i], params,
+                              standardise, link)
+    for fl in resolve(live, ep, i, fill_params):        # orders already live
+        q, cash = apply(fl, fee_schedule, ledger)
+    to_place, to_cancel = decide(i, eff_bid, eff_ask, q, ep, live,
+                                 execn, params)
+    # the engine stamps timing: live_from / cancel_at / expires_at
+    live = stamp(live, to_place, to_cancel, latency, rng)
 settle(q, ep.winner_up)
 ```
+
+Illustrative, but every signature above is the real one. Two things the shape
+carries: fills against already-live orders are resolved **before** policy runs
+at the same index, and **latency lives in the loop, not in the policy block** —
+`decide` returns intentions with no timing, and the engine turns them into
+`live_from` / `cancel_at` / `expires_at` indices. That is why fill optimism and
+latency can be swept with policy held fixed. Cancels are also issued when the
+model is *not* quoting (`s` or `sigma` NaN), and only ever to orders a cancel
+can still reach (`types.cancellable_ids`).
 
 `execution` owns policy: order lifetime, requote cadence, cancel rules,
 `max_book_age_ms` gating, position caps (**enforced on the taker path too**
@@ -246,24 +298,29 @@ cross is snapped. The taker threshold is also where fee-awareness bites hardest:
 crossing on a 1 c edge against a ~1.6 c fee loses by construction.
 
 Because `eff_bid`/`eff_ask` are now theory rather than order prices, that is
-what `fills.parquet` and `ticks.parquet` record under those names; the order
+what `ledger.parquet` and `ticks.parquet` record under those names; the order
 price is the fill `price` on a maker fill, and `price - eff_bid` is exactly the
 rebate the single snap let through.
 
 ### 3.2 Latency
 
-Parametric, seeded, with jitter. Defaults:
+Parametric and seeded, one `LatencyModel` dataclass. Defaults:
 
-| path | default | source |
+| field | default | source |
 |---|---|---|
-| place / cancel (maker) | **100 ms** | operator-set |
-| take | **200 ms** | operator-set |
+| `place_ms` / `cancel_ms` (maker) | **100 ms** | operator-set |
+| `take_ms` | **200 ms** | operator-set |
+| `taker_lock_ms` | **250 ms** | venue mechanic — see (a) |
+| `move_cancel_ms` | `None` (falls back to `cancel_ms`) | see below |
+| `jitter_frac` | `0.0` — off unless set, then a lognormal multiplier | |
 
 Two caveats carried in code, not prose:
 
 **(a) The 250 ms taker lock is a venue mechanic, not an assumption.** The venue
-holds marketable crypto up/down orders ~250 ms, non-cancellable. The taker fill
-model enforces that as a *floor* independent of the latency parameter. It also
+holds marketable crypto up/down orders ~250 ms, non-cancellable.
+`LatencyModel.draw` enforces `taker_lock_ms` as a *floor* on the take path,
+independent of the latency parameter, and `Order.is_cancellable` refuses to
+retract a cross inside that window. It also
 reconciles the measured 276 ms taker fill as 26 ms POST flight + 250 ms lock.
 
 **(b) Taker edge is not robust across this range.**
@@ -271,10 +328,11 @@ reconciles the measured 276 ms taker fill as 26 ms POST flight + 250 ms lock.
 and 500 ms (CI [+0.157, +0.587] falling to [-0.026, +0.309]). The 200 ms default
 is therefore reported *always* alongside its sweep, never alone.
 
-Measured constants available as an alternative `LatencyModel`: POST flight 26 ms
-floor / 97 ms p5; cancel round trip 28 ms quiet, **73-165 ms in a move**. The
-move-conditional cancel is the adverse-selection mechanism itself and belongs in
-any serious maker run.
+The measured constants are configured on that same dataclass rather than being a
+separate model: POST flight 26 ms floor / 97 ms p5; cancel round trip 28 ms
+quiet, **73-165 ms in a move** — the latter is `move_cancel_ms`, drawn whenever
+the book updated at the decision index. The move-conditional cancel is the
+adverse-selection mechanism itself (§3.3) and belongs in any serious maker run.
 
 Seeding is **per-episode**: `hash(market_id, run_seed)`. Results are
 byte-identical regardless of worker count or completion order, so reproducibility
@@ -282,11 +340,45 @@ and parallelism do not trade off.
 
 ### 3.3 Fill models
 
-Default `fill.py` is **touch-fill with adverse-selection lag**: a resting order
-fills when the market's L1 crosses it, booked at the price after the reaction
-delay — so you are filled hardest when the book is moving against you. Shipped
-alternatives for bounding: optimistic touch-fill (upper bound) and
-penetration-required (conservative). Every maker headline reports the range.
+Default `fill.py` is **touch-fill**: a resting order fills **at its own price**
+the moment the book's L1 reaches it. A limit order trades at its limit.
+
+**Adverse selection is not modelled by degrading the fill price. It is modelled
+by the cancel losing the race.** `cancel_at` is an index: policy decides to pull
+a quote at index `i`, the cancel lands at `i + delay_idx(cancel_latency)`, and
+any cross before then fills us anyway (`Order.is_live`). Because cancel latency
+rises inside a move — 28 ms quiet against **73-165 ms in a move**, carried as
+`LatencyModel.move_cancel_ms` and drawn with `in_move=True` when the book
+updated at this index — we are filled hardest exactly when we are most wrong.
+That mechanism *is* the adverse selection, which is why the move-conditional
+cancel belongs in any serious maker run.
+
+`penetration` (an entry in `execn.fill_params`, default 0.0) is the
+conservative arm: require the book to trade *through* our price by that margin,
+a cheap proxy for the queue position this data cannot observe.
+
+Marketable orders take a separate branch: they pay the book — `ask` on a buy,
+`bid` on a sell — but never through their own protective limit, and they live
+for exactly the tick they arrive on (`expires_at = live_from + 1`; the venue
+held the order through its 250 ms lock, so a cross that is no longer marketable
+on arrival is over, not resting).
+
+The three shipped arms (`harness/core/sweeps.py`, `FILL_ARMS`) do **not** differ
+only in `penetration`:
+
+| arm | `penetration` | cancel latency |
+|---|---|---|
+| `optimistic` | 0.0 | **zeroed** — `cancel_ms=0`, `move_cancel_ms=None` |
+| `adverse_lag` | 0.0 | exactly as the caller configured it |
+| `penetration` | 0.01 | exactly as the caller configured it |
+
+An optimistic arm that keeps a realistic cancel is not an upper bound: with the
+fill price fixed at the limit, it would be byte-identical to the default arm and
+the sweep would silently run the same configuration twice. Every maker headline
+reports the range across all three.
+
+None of this is measurable from the panel — no depth, no trade tape, no queue.
+Report a range, never one number.
 
 ---
 
@@ -300,13 +392,20 @@ BASE_FEE_RATE      = 0.07
 MAKER_REBATE_PHI   = 0.20     # measured 0.199-0.209, both wallets, all periods
 TAKER_REBATE_RHO   = 0.0833   # Silver tier
 
-def charge(side, liquidity, shares, p) -> float:
-    """USD. Negative means we are paid."""
-    base = BASE_FEE_RATE * p * (1.0 - p) * shares
-    if liquidity == TAKER:
-        return  base * (1.0 - TAKER_REBATE_RHO)
-    return -base * MAKER_REBATE_PHI
+@dataclass(frozen=True)
+class FeeSchedule:                     # fields default to the three constants
+    def charge(self, liquidity, shares, p) -> float:
+        """USD owed on a fill. Negative means we are paid."""
+        base = self.base_fee_rate * p * (1.0 - p) * shares
+        if liquidity == Liquidity.TAKER:
+            return  base * (1.0 - self.taker_rebate_rho)
+        return -base * self.maker_rebate_phi
 ```
+
+The `fees` slot supplies the **class**; the schedule a run actually prices and
+charges against is one instance, resolved once by `run()` — `ExecConfig.fees`
+wins if set, otherwise the resolved block's `FeeSchedule()` — and stamped back
+onto the config so policy and ledger cannot use different schedules.
 
 Taker fee peaks at **1.75 c/share at p = 0.50** and vanishes at the tails —
 which is *why* taking is a tail-only exception: near mid it needs more than
@@ -316,9 +415,20 @@ which is *why* taking is a tail-only exception: near mid it needs more than
 The 1.263 c/share figure in the strategy docs is the realised average over the
 fill distribution, **not** a constant. Do not hard-code it.
 
-**Not modelled by default:** the $1.00/day per-stream minimum rebate payout
-(dust days are not paid). Available as `fees.apply_daily_minimum()` for runs
-whose daily maker rebate is small enough to matter.
+**Off by default: the $1.00/day per-stream minimum rebate payout** — dust days
+are simply not paid, so a backtest that books them overstates maker economics.
+`ExecConfig.apply_daily_minimum` (default `False`) turns it on; `run()` then
+passes the fill ledger through the resolved fees block's
+`apply_daily_minimum(ledger, minimum_usd=1.0)`, which zeroes `fee_usd` on the
+maker rows of any `day` whose total maker rebate fell short of the floor. The
+choice is stamped either way into
+`summary["caveats"]["daily_rebate_minimum_applied"]`. Separation was perfect
+over 131 earn-days: smallest paid $1.0359, largest skipped $0.7209.
+
+**It rewrites `ledger.parquet` only.** `markets.parquet`, the headline and the
+gates are computed per episode *before* the adjustment, so with the flag on the
+withheld dust shows up in the ledger and not in the PnL rollup. Read the two
+together, or re-aggregate from the ledger.
 
 ---
 
@@ -326,10 +436,12 @@ whose daily maker rebate is small enough to matter.
 
 ### 5.1 Fill ledger — `ledger.parquet`, one row per fill
 
-`market_id, open_ts, t_ms, side, liquidity, shares, price, fee_usd,
-s, sigma, z, eff_bid, eff_ask, book_bid, book_ask, mid_at_fill,
+`market_id, open_ts, day, t_ms, side, liquidity, shares, price, fee_usd,
+s, sigma, z, fair_p, eff_bid, eff_ask, book_bid, book_ask, mid_at_fill,
 q_before, q_after, latency_ms, order_age_ms, mid_t10, delta_quality_c,
 markout_settled, seed, order_id, reason`
+
+(the order `Ledger.record_fill` writes them in)
 
 - `liquidity` — maker or taker, on every row.
 - `eff_bid` / `eff_ask` — the **theoretical** quote, off the cent grid. The
@@ -337,7 +449,15 @@ markout_settled, seed, order_id, reason`
 - `fee_usd` — **negative for maker** (rebate). Gross and net are always both
   recoverable; a harness that reports only one will eventually report the wrong
   one, and the taker case (gross +1.085 against the fee) is exactly that trap.
-- `mid_t10` — the book mid 10 s after the fill.
+- `fair_p` — `link(z)` at the fill, recorded rather than re-derived. It is
+  what lets the report layer compute calibration under **whatever `link` block
+  the run actually used**; re-deriving `p` from `z` with a default logistic
+  would be silently wrong for any custom link. The `calibration` figure in
+  `harness.report.figures` reads it straight off the row.
+- `day` — the calendar day, carried so day-blocked statistics and the daily
+  rebate minimum can group without a re-join.
+- `mid_t10` — the book mid 10 s after the fill, or the settlement outcome
+  (0 or 1) where that lands past the end of the window.
 - `delta_quality_c` — signed markout in c/share: `100 * (mid_t10 - price)` for a
   buy, `100 * (price - mid_t10)` for a sell (prices are probabilities, so the
   factor of 100 puts it in cents). Positive is good. Where `t_ms + 10 s >= 300 s`
@@ -346,74 +466,123 @@ markout_settled, seed, order_id, reason`
 
 ### 5.2 Per-market rollup — `markets.parquet`
 
-PnL gross and net, fill counts by liquidity, max `|q|`, mean
-`delta_quality_c`, settlement, coverage and `has_spot`.
+One row per (market, seed): `market_id, open_ts, day, pnl_gross, pnl_net,
+fees, shares, n_fills, max_abs_q, settled, has_spot, winner_up, seed`.
+
+`winner_up` is carried here so **calibration can use every fill**. It used to be
+reconstructed from the ledger's settlement markout, which only covers fills in
+roughly the last 10 s of a 300 s market — an unrepresentative slice. Joining the
+ledger to this frame on `(run, market_id)` gives every fill the market's actual
+outcome.
+
+Per-liquidity fill counts and the mean `delta_quality_c` are **not** in this
+frame; both are one `groupby` off `ledger.parquet`, which is where the
+per-liquidity detail lives.
 
 ### 5.3 Per-tick diagnostics — `ticks.parquet`, opt-in
 
 Enabled by `emit_ticks=True`, optionally restricted to a market subset (it is
-~3,000 rows per market). Carries `t_ms, s, sigma, z, fair_p, eff_bid, eff_ask,
-book_bid, book_ask, mid, book_age_ms, spot, q, cash, cum_pnl, orders_live`, so
+~3,000 rows per market). Carries `market_id, t_ms, s, sigma, z, fair_p,
+eff_bid, eff_ask, book_bid, book_ask, mid, book_age_ms, spot, q, cash,
+cum_pnl, orders_live`, so
 a single market can be watched play out tick by tick and the retreated quotes
 inspected directly against the book, and (via `spot`) against the venue BTC
 price itself.
 
-### 5.4 Plots
+### 5.4 Plots — not here
 
-`cum_pnl.png` (cumulative net PnL over the ordered market sequence) always;
-per-market quote-versus-book panels when tick output is on.
+`run()` writes data and stops. It produces no PNGs, and `Output` has no `plots`
+flag. Plotting is the separate, optional `harness.report` module, which reads
+run folders (`load_runs({label: dir, ...})`) and is never called by the engine —
+a run sees exactly one configuration and so cannot draw the sweep comparison
+anyone actually wants. See §4a of the stream-registry spec.
 
 ---
 
 ## 6. Run parameters
 
+One public entry point, `harness.core.api.backtest` (re-exported as
+`harness.backtest`), returning a `BacktestResult(run_dir, summary, ledger,
+markets, ticks)`:
+
 ```python
-run(
-  blocks = BlockSet(),                      # resolved from files; all optional
-  quote  = QuoteParams(e_s=, e_z=, e_p=, rpl_s=, rpl_z=, rpl_p=, max_pos=),
-  execn  = ExecConfig(latency=LatencyModel(place_ms=100, cancel_ms=100,
-                                           take_ms=200, jitter=...),
-                      max_book_age_ms=, requote_every=,
-                      min_tte_s=, max_tte_s=, fill_params={},
-                      fees=FeeSchedule()),   # a POLICY input: see 3.1
-  sample = Sample(t0=, t1=, days=[], markets=[], tte_range=(),
-                  split="train"|"test"|"all", max_markets=),
-  output = Output(emit_ticks=False, tick_markets=[], seeds=[0,1,2], plots=True),
+from harness import backtest, QuoteParams, ExecConfig, Sample, Output
+from harness.core.latency import LatencyModel
+
+result = backtest(
+  model   = "../models/normal_qq",   # shared block set; None -> defaults only
+  streams = ("book", "strikes", "spot"),      # recorded into the manifest
+  quote   = QuoteParams(e_s=, e_z=, e_p=, rpl_s=, rpl_z=, rpl_p=,
+                        max_pos=, tick=0.01, shares=1.0),
+  execn   = ExecConfig(latency=LatencyModel(place_ms=100, cancel_ms=100,
+                                            take_ms=200, taker_lock_ms=250,
+                                            jitter_frac=0.0,
+                                            move_cancel_ms=None),
+                       fees=None,             # a POLICY input: see 3.1
+                       max_book_age_ms=1000.0, requote_every=10,
+                       min_tte_s=0.0, max_tte_s=300.0,
+                       fill_params={},        # e.g. {"penetration": 0.01}
+                       apply_daily_minimum=False),
+  sample  = Sample(t0=, t1=, days=(), markets=(), max_markets=None,
+                   require_spot=False, require=("spot",)),
+  output  = Output(emit_ticks=False, tick_markets=(), seeds=(0,)),
+  episodes = episodes,               # the Episode list to replay
+  investigation_dir = HERE,          # blocks resolve here; runs are written here
 )
 ```
 
-There is no `mode`: making and taking are one policy (§3.1). `fees` is a run
-parameter that the *policy* reads, because the post and cross thresholds are
+There is **no `blocks=` argument and no `BlockSet`**: slots are files, resolved
+investigation-first, then `model`, then `harness/blocks/defaults/` (§2.1).
+There is no `mode` either: making and taking are one policy (§3.1). `fees` is a
+run parameter that the *policy* reads, because the post and cross thresholds are
 fee-adjusted; leaving it `None` falls back to the resolved `fees` block, and
 `run` stamps whichever schedule it resolved back onto the config so the policy
 prices against exactly the schedule the ledger charges.
 
-`Sample` supports an arbitrary time subset — date range, explicit day list,
-explicit market list, or a tau window — so an investigation can target the
-endgame, one day, or one market without touching the engine.
+`Sample` selects **markets**: a date range (`t0`/`t1` on `open_ts`), an explicit
+day list, an explicit market list, a cap, and `require=(...)`, which excludes any
+market where a named stream has no usable observation — excluded meaning absent,
+never scored as zero, with the per-stream drop counts reported in
+`summary["sample"]["dropped"]`. It has no `split` and no `tte_range`: the
+time-to-expiry window is a *policy gate*, `ExecConfig.min_tte_s` /
+`max_tte_s`, applied inside the episode rather than by dropping markets.
+
+Below the API sit `harness.core.run.run(investigation_dir, quote, execn, sample,
+output, episodes, inputs=(), model_dir=None, streams=())` — the single-arm
+primitive, which also fingerprints `inputs` into the manifest — and
+`harness.core.sweeps.run_with_sweeps(...)`, which adds the arms of §8.
 
 ---
 
 ## 7. Provenance
 
 ```
-investigations/2026-09-09-t-distribution-link/
-  link.py            # the override
+../investigations/2026-09-09-t-distribution-link/
+  link.py            # the override, shadowing the model directory
   run.py
   runs/2026-09-09T14-22-05__a3f9c1/
-    manifest.json    # slot -> resolved path + sha256, for EVERY slot
+    manifest.json    # every slot: resolved path + sha256; plus the config,
+                     #   the fingerprinted inputs, the seeds, the git commit
     blocks/          # frozen copy of every block file used
-    params.json  inputs.json  ledger.parquet  markets.parquet
-    ticks.parquet    # if enabled
-    summary.json  report.md  cum_pnl.png
+    ledger.parquet   markets.parquet
+    ticks.parquet    # if emit_ticks
+    summary.json     # headline, per_seed, gates, sample drops, caveats
 ```
 
 `manifest.json` records the sha256 of every block file actually used, the
-harness git commit, the panel and spot build identities, and the seeds. The
-block files themselves are copied in, so a run folder still answers *what was
-this model?* after the investigation folder has moved on. The run id is a
-timestamp plus a short hash of the manifest, making identical configurations
-visibly identical.
+harness git commit, the fingerprinted input files (whatever was passed as
+`inputs`), the resolved config and the seeds. The block files themselves are
+copied in, so a run folder still answers *what was this model?* after the
+investigation folder has moved on — which is why referencing a shared model
+directory instead of copying blocks costs nothing in provenance. The run id is a
+timestamp plus a short hash of the **config**, making identical configurations
+visibly identical; that hash covers `fill_params`, the tte window and the fee
+schedule, because two sweep arms differing only in `fill_params` once shipped
+run folders with the same suffix.
+
+There is no `params.json`, no `inputs.json`, no `report.md` and no PNG: the
+config and the inputs live inside `manifest.json`, and drawing is
+`harness.report`'s job (§5.4).
 
 ---
 
@@ -422,20 +591,38 @@ visibly identical.
 Metrics in **c/share** and **$/market** — the units the existing studies use, so
 results are comparable across repos.
 
-Four discipline gates, promoted from habit to a function every run calls.
-`final-model-architecture.md` §4 states these exist and are *"applied
-inconsistently"*; making them automatic is the cheapest available fix.
+Four discipline gates. `final-model-architecture.md` §4 states these exist and
+are *"applied inconsistently"*; making them automatic is the cheapest available
+fix. **Three of the four are automatic** — `stats.run_gates`, which every run
+calls, writing each gate's verdict and its numbers into `summary["gates"]`:
 
-1. sign survives every calendar period
-2. day-blocked bootstrap CI excludes zero
-3. delete-the-ten-best does not flip the sign
-4. period-blocked refits, never a single global fit
+1. `sign_survives_periods` — the sign survives every calendar period
+2. `ci_excludes_zero` — the **day**-blocked bootstrap CI excludes zero (days,
+   not markets: markets inside a day share a regime, a book and a competitor
+   set)
+3. `delete_top_10` — deleting the ten best markets does not flip the sign
 
-Three sweeps attach to every headline automatically:
+The fourth — **period-blocked refits, never a single global fit** — is a
+property of how `s` was fitted, and this harness imports `s` rather than fitting
+it (§Scope). It cannot be enforced here; it belongs to whatever produced the
+fair export, and a run cannot certify it.
 
-- **latency** — 0 / 100 / 200 / 250 / 500 ms plus the measured distribution
-- **fill optimism** — optimistic / adverse-lag / penetration-required
+Three sweeps attach to a headline. The first two are
+`harness.core.sweeps.run_with_sweeps`, which replays the base configuration
+once per arm and writes the arms into `summary["sweeps"]`; the third is just
+`Output.seeds`, which every `run()` already loops over into
+`summary["per_seed"]`:
+
+- **latency** — 0 / 100 / 200 / 250 / 500 ms, each applied to `place`, `cancel`
+  and `take` together (the 250 ms venue lock still floors the take path, so the
+  lower rungs move the maker paths only)
+- **fill optimism** — `optimistic` / `adverse_lag` / `penetration`, which differ
+  in `penetration` *and* in cancel latency (§3.3)
 - **seeds** — multi-seed, since jitter makes runs stochastic
+
+`run()` itself is the single-arm primitive and attaches none of them: a run that
+reports one maker number without the fill sweep is a run that has not been
+asked the question.
 
 ### The standing caveat
 
@@ -453,16 +640,28 @@ replay clock, not of a chain. No result leaves this harness pretending the
 ```
 Gambling104/                     # git root (initialised 2026-09-09)
   backtesting_5m/
+    pyproject.toml               # installs the `harness` package (pip -e)
     data/                        # existing build, untouched
-    harness/
-      core/       episode.py  loop.py  ledger.py  stats.py  provenance.py
-      build/      spot_5m_100ms.py  episodes.py
-      blocks/defaults/  fair.py vol.py f.py link.py quote.py
-                        execution.py fill.py fees.py
-      tests/
-    investigations/
     docs/superpowers/specs/
+    harness/
+      paths.py  io.py
+      core/       api.py config.py episode.py latency.py ledger.py loop.py
+                  provenance.py run.py stats.py sweeps.py types.py
+      streams/    spec.py registry.py reader.py writer.py catalog.py
+                  validate.py
+      report/     load.py figures.py    # optional; never called by run()
+      build/      spot_5m_100ms.py spot_5m_100ms_london.py episodes.py
+      blocks/defaults/      fair.py vol.py f.py link.py quote.py
+                            execution.py fill.py fees.py
+      blocks/placeholders/  fair_flat.py
+      tests/
+  models/                        # shared block sets, referenced by name
+  investigations/                # all research lives here, not in the module
 ```
+
+`harness` is an installed package, so a runner anywhere — including
+`../investigations/<x>/run.py` — does `import harness` with no `sys.path`
+surgery. See §4b of the stream-registry spec for why that matters.
 
 ---
 
@@ -485,12 +684,16 @@ Gambling104/                     # git root (initialised 2026-09-09)
    tau = 13 s; two independent studies agree the endgame is not collectable. The
    harness can measure it, but a positive endgame result should be read as a bug
    first.
+8. **The venue-to-panel clock offset is assumed, not measured** (§1.2). Default
+   0.0 s, plausible band 0-74 ms, admitted in `summary["caveats"]` on every run.
+   Every spot-derived number is conditional on it and should be swept over that
+   band the way latency and fill optimism are.
 
 ## Open items
 
 - Whether the taker latency default should be 200 ms (operator-set) or 276 ms
-  (measured). Implemented as 200 ms with the 250 ms venue lock enforced in the
-  fill model and the sweep mandatory.
+  (measured). Implemented as 200 ms, with the 250 ms venue lock enforced as a
+  floor in `LatencyModel.draw` and the latency sweep expected on every headline.
 - The fair export format from Gambling102 — needs a per-`(market_id, t_ms)`
   contract and a statement of what information went into each value, so it can
   be lookahead-audited on import.
