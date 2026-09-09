@@ -69,3 +69,30 @@ def test_bucket_boundary_survives_float_error():
     out = grid_stream(_rows([0.1, 0.0996], [1.0, 2.0]), OPEN, ("px",))
     assert out["px"][2] == 1.0, "exact 0.1 s must not fall a bucket early"
     assert out["px"][1] == 2.0, "99.6 ms must not be rounded up a bucket"
+
+
+def test_the_earliest_observation_in_a_bucket_wins_even_when_the_frame_is_unsorted():
+    """Ties must break by TIME, not by row order.
+
+    write_stream sorts by day, never by recv_ns within a day, so an unsorted
+    frame is a real input -- and getting this wrong puts the wrong value on
+    the grid with no error at all.
+    """
+    df = _rows([0.05, 0.00, 0.10], [999.0, 1.0, 2.0])   # deliberately unsorted
+    out = grid_stream(df, OPEN, ("px",))
+    assert out["px"][1] == 1.0, "the 0.00 s observation is the first in bucket 0"
+    assert out["px"][2] == 2.0
+
+
+def test_has_does_not_depend_on_which_value_column_comes_first():
+    """`has` is about whether an observation arrived, not whether one
+    particular column happened to be non-null."""
+    df = pd.DataFrame({
+        "recv_ns": [(OPEN + 0.0) * 1_000_000_000],
+        "a": [float("nan")],
+        "b": [5.0],
+    })
+    ab = grid_stream(df, OPEN, ("a", "b"))
+    ba = grid_stream(df, OPEN, ("b", "a"))
+    assert list(ab["has"]) == list(ba["has"])
+    assert ab["has"][1], "an observation did arrive, whatever column a holds"

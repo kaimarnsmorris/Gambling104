@@ -36,7 +36,8 @@ def grid_stream(df, open_ts, value_cols, time_col="recv_ns",
     keep = (k >= 0) & (k < N_BUCKET)
     k = k[keep]
 
-    order = np.argsort(k, kind="stable")            # first-in-bucket wins
+    ts_kept = ts[keep]
+    order = np.lexsort((ts_kept, k))     # primary k, secondary ts
     k_sorted = k[order]
     first = np.ones(len(k_sorted), dtype=bool)
     first[1:] = k_sorted[1:] != k_sorted[:-1]
@@ -60,5 +61,5 @@ def grid_stream(df, open_ts, value_cols, time_col="recv_ns",
             age = np.where(present, 0.0, np.inf) if age is None else age
 
     out["age_ms"] = age
-    out["has"] = np.isfinite(out[value_cols[0]]) if value_cols else present
+    out["has"] = np.isfinite(age)
     return out
