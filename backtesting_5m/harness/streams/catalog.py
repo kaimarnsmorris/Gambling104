@@ -8,6 +8,21 @@ from harness.streams.registry import register
 from harness.streams.spec import Stream, TimeKind
 
 
+def _spot_adapter(name):
+    """Spot panels predate the standard: they key on (open_ts, t_ms), not
+    recv_ns, and are ALREADY on the decision grid.
+
+    `pre_gridded=True` is load-bearing. `grid_stream` treats its time column as
+    an absolute epoch; `t_ms` is milliseconds since the market open, so
+    gridding one of these would compute a hugely negative offset and silently
+    drop every observation. These entries exist for discovery and to put the
+    currency warnings in one place -- `load_episodes` reads the panels by its
+    existing path.
+    """
+    return Stream(name=name, time_col="t_ms", time_kind=TimeKind.RECEIPT,
+                  time_unit="ms", causal=True, pre_gridded=True)
+
+
 def install():
     """Register the standard streams. Idempotent."""
     #: PRE-GRIDDED. The book and spot panels are already keyed on
@@ -27,3 +42,25 @@ def install():
     register("chainlink", paths.RTDS_BTC, adapter=Stream(
         name="chainlink", time_col="px_first_recv_ns",
         time_kind=TimeKind.RECEIPT, time_unit="ns", causal=True))
+
+    #: BTC/USD. The default. Venue mid less the capture's usdt_basis; sits
+    #: +$4.50 (sd 7.44) against the Chainlink oracle, versus +$43.17 raw.
+    register("spot_usd", paths.SPOT, adapter=_spot_adapter("spot_usd"))
+
+    #: BTC/USD, rebuilt over the oracle overlap 2026-08-17..08-21 so a
+    #: basis-learning fair block has a Chainlink line for the whole window.
+    register("spot_oracle_window", paths.SPOT_ORACLE_WINDOW,
+             adapter=_spot_adapter("spot_oracle_window"))
+
+    #: BTC/USDT, UNCORRECTED -- roughly +$56 against the BTC/USD oracle these
+    #: markets settle on. panel_100ms carries no usdt_basis column, so no
+    #: correction is possible here. Usable ONLY with a fair block that learns
+    #: the basis against the oracle itself. A USD-assuming consumer is $56
+    #: wrong; the name says usdt for that reason.
+    register("spot_london_usdt", paths.SPOT_LONDON_USDT,
+             adapter=_spot_adapter("spot_london_usdt"))
+
+    #: Superseded BTC/USDT panel. Registered only so a historical run folder
+    #: can be reproduced against the data it actually used. Do not build on it.
+    register("spot_legacy_usdt", paths.SPOT_LEGACY_USDT,
+             adapter=_spot_adapter("spot_legacy_usdt"))

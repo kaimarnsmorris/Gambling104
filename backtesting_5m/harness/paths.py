@@ -8,69 +8,18 @@ DATA = os.path.join(PROJECT, "data")
 PANEL = os.path.join(DATA, "book_5m_100ms.parquet")
 STRIKES = os.path.join(DATA, "strikes_5m.parquet")
 RESULTS = os.path.join(DATA, "results")
-#: The spot panel, on a BTC/**USD** basis -- the venue's BTC/USDT mid less
-#: the capture's `usdt_basis`. This is the DEFAULT because these markets
-#: settle on Chainlink's BTC/USD 60 s TWAP, so the panel must be quoted in
-#: the same currency as the thing being forecast.
-#:
-#: Measured against the Chainlink oracle over 1.65 M buckets: the legacy
-#: BTC/USDT panel sat +$43.17 high (sd 16.36); this one sits +$4.50
-#: (sd 7.44). The old bias was also TIME-VARYING -- day-means drifting
-#: ~$40 to ~$10 across the sample -- so no fitted intercept could absorb
-#: it. See harness/build/spot_5m_100ms.py.
+#: See harness/streams/catalog.py, register("spot_usd", ...)
 SPOT = os.path.join(DATA, "spot_5m_100ms_usd.parquet")
 SPOT_USD = SPOT                      # explicit alias; same file
 
-#: The spot panel rebuilt over the ORACLE OVERLAP, 2026-08-17..08-21. Same
-#: build, same USD basis correction, same columns as `SPOT`; only the window
-#: differs. It exists because the three feeds this harness needs do not span
-#: the same days:
-#:
-#:     book panel   2026-08-14 -> 09-08
-#:     venue L1     2026-08-17 -> 09-09
-#:     RTDS oracle  2026-08-14 -> 08-21 01:59
-#:     ------------------------------------
-#:     overlap      2026-08-17 -> 08-21 01:59
-#:
-#: `SPOT` covers 2026-08-19..24, of which only ~2.1 days have an oracle line,
-#: and a basis-learning fair block returns NaN without one -- so a six-day
-#: headline had collapsed to a two-day one. This window carries 3.90 days of
-#: oracle-covered spot against that 2.08: 3,281,366 buckets against
-#: 1,759,022, a factor of 1.87.
-#:
-#: Two partial days at the ends, both from the source captures and not from
-#: this build: `stream_venue_l1` does not start until 2026-08-17 04:19 UTC
-#: (236 markets that day, not 288), and the oracle stops at 2026-08-21 01:59,
-#: so 08-21's spot is complete but only its first ~2 h can be scored against
-#: Chainlink.
+#: See harness/streams/catalog.py, register("spot_oracle_window", ...)
 SPOT_ORACLE_WINDOW = os.path.join(DATA, "spot_5m_100ms_usd_0817_0821.parquet")
 
-#: The FULL-WINDOW spot panel, 2026-08-14 02:55 .. 2026-08-21 02:00, built
-#: from the London recorder's own 100 ms panel (`LONDON_PANEL_100MS`) rather
-#: than from `stream_venue_l1`. It exists because that recorder starts where
-#: the Chainlink oracle starts, so the three-way overlap widens from the
-#: 1,102 priceable markets of `SPOT_ORACLE_WINDOW` to roughly 1,970.
-#:
-#: ITS `spot` IS BTC/**USDT**, UNCORRECTED -- which is why the name says
-#: USDT and not USD, and why there is no `usdt_basis` column to subtract.
-#: The source recorder kept the raw venue book and not the USDT/USD
-#: conversion, so the correction cannot be applied here at all. This panel
-#: therefore sits ~**+$43** (sd ~16, drifting by day) above the settlement
-#: feed, and `spot == spot_usdt` on every row.
-#:
-#: A BASIS-LEARNING FAIR BLOCK IS REQUIRED to price off it. A block that
-#: reads `ep.spot` as USD -- as `paths.SPOT` and `SPOT_ORACLE_WINDOW`
-#: legitimately allow -- is wrong by about 0.17 of a 300 s sigma, roughly
-#: 7 c of probability bias toward UP, some four times the taker fee. No gate
-#: downstream can detect that. The block in
-#: `investigations/2026-09-09-normal-qq-eval/fair.py` learns
-#: `B_t = ewm(spot_usdt - chainlink)` and is safe here; `harness/build/
-#: spot_5m_100ms_london.py` documents the rest.
+#: See harness/streams/catalog.py, register("spot_london_usdt", ...)
 SPOT_LONDON_USDT = os.path.join(DATA, "spot_5m_100ms_usdt_london.parquet")
 SPOT_LONDON = SPOT_LONDON_USDT       # explicit alias; same file
 
-#: The superseded BTC/USDT panel. Kept only so a historical run folder can
-#: be reproduced against the data it actually used. Do not build on it.
+#: See harness/streams/catalog.py, register("spot_legacy_usdt", ...)
 SPOT_LEGACY_USDT = os.path.join(DATA, "spot_5m_100ms.parquet")
 FAIR_DIR = os.path.join(DATA, "fair")
 INVESTIGATIONS = os.path.join(PROJECT, "investigations")
