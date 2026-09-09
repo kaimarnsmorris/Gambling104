@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _chainlink_fv_export import columns_for
 
 
-def precompute(ep, variant=None):
+def precompute(ep, variant=None, scale=1.0):
     """`variant` travels as a signal param, never as ambient state.
 
     The harness caches this array on the CONTENT of the block files plus
@@ -22,5 +22,12 @@ def precompute(ep, variant=None):
     environment puts nothing in that key and the second variant in a process is
     handed the first one's arrays. Passing it here is what makes the cache correct.
     Falling back to `FV_VARIANT` keeps a plain single-variant run a one-liner.
+
+    `scale` is the manual vol adjustment, and it is a signal param so the harness
+    can sweep it without rebuilding a single export. Scaling the settlement scale
+    up shrinks |z| and pulls `p` toward a half, which is the lever on the
+    overconfidence the tails show: the model says 0.361 where the book says 0.481
+    and reality was 0.458. Note that it moves magnitude, not sign, so it changes
+    which trades clear a threshold rather than which way they point.
     """
-    return columns_for(ep.market_id, variant)[1]
+    return columns_for(ep.market_id, variant)[1] * float(scale)
