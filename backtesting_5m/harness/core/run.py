@@ -103,7 +103,8 @@ def config_dict(quote, execn, sample, output, fee_schedule, streams=(),
     """
     return {
         "quote": asdict(quote),
-        "signal_params": dict(normalise_params(signal_params)),
+        "signal_params": {slot: dict(pairs) for slot, pairs
+                          in normalise_params(signal_params)},
         "sample": asdict(sample),
         "output": asdict(output),
         "latency": asdict(execn.latency),
@@ -256,9 +257,10 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
     depend on the episode, the `fair`/`vol` blocks and `signal_params` alone
     -- not on quote parameters, not on the seed -- and cost 61 % of an arm,
     so recomputing them per arm is the single largest waste in a sweep.
-    `signal_params` reaches those two blocks as keyword arguments, which is
-    how a grid sweeps a model parameter (vol scale, say) without editing the
-    block per point. Both are recorded in the config. See
+    `signal_params` is `{slot: {name: value}}` and reaches that block's
+    `precompute` as keyword arguments, which is how a grid sweeps a model
+    parameter (`{"vol": {"scale": 1.6}}`, say) without editing the block per
+    point. Both are recorded in the config. See
     harness/core/signals.py for what the cache key covers and why it must.
     """
     resolved = provenance.resolve_slots(investigation_dir, model_dir=model_dir)

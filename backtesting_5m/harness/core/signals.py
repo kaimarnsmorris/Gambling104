@@ -22,11 +22,18 @@ other slot runs inside the loop and cannot reach these arrays.
 
 SWEEPING A MODEL PARAMETER. A grid over vol scale is as ordinary as a grid
 over half-spread, and requiring an edit to `vol.py` per point would make it
-impossible. `signal_params` is passed through to `precompute` as keyword
-arguments and forms part of the cache key, so a block that wants to be swept
-declares the parameter and every value gets its own entry. A block that
-takes `(ep)` alone is unaffected: an empty `signal_params` calls it exactly
-as before.
+impossible. `signal_params` carries those parameters, KEYED BY SLOT:
+
+    signal_params={"vol": {"scale": 1.6}}
+
+Keyed by slot rather than flat, because a parameter belongs to one block.
+A flat dict has to be broadcast to both, and then a `scale` meant for `vol`
+reaches `fair.precompute` as an unexpected keyword and the run dies -- which
+is exactly what the first version of this did. Naming the slot also makes
+the config hash say which block was swept.
+
+An unknown slot name raises rather than being ignored: a typo that silently
+swept nothing would report the baseline under the swept arm's label.
 """
 import hashlib
 
@@ -66,17 +73,28 @@ def block_signature(resolved):
 
 
 def normalise_params(signal_params):
-    """`signal_params` as a sorted tuple of pairs -- hashable, order-free.
+    """`{slot: {name: value}}` as a sorted tuple of pairs -- hashable.
 
     A dict is the natural thing to write and an unusable cache key; sorting
-    means `{"scale": 2, "floor": 1}` and `{"floor": 1, "scale": 2}` are one
-    entry rather than two.
+    at both levels means `{"vol": {"a": 1, "b": 2}}` and
+    `{"vol": {"b": 2, "a": 1}}` are one cache entry rather than two.
     """
     if not signal_params:
         return ()
     items = (signal_params.items() if hasattr(signal_params, "items")
              else signal_params)
-    return tuple(sorted((str(k), v) for k, v in items))
+    out = []
+    for slot, params in items:
+        if slot not in SIGNAL_SLOTS:
+            raise ValueError(
+                f"signal_params slot {slot!r} is not one of {SIGNAL_SLOTS}. "
+                f"Parameters are keyed by the block they belong to, e.g. "
+                f'signal_params={{"vol": {{"scale": 1.6}}}}. A slot nobody '
+                f"reads would sweep nothing and report the baseline under "
+                f"the swept arm's name.")
+        inner = (params.items() if hasattr(params, "items") else params)
+        out.append((slot, tuple(sorted((str(k), v) for k, v in inner))))
+    return tuple(sorted(out))
 
 
 def precompute_signals(episodes, modules, signature, cache=None,
@@ -87,10 +105,11 @@ def precompute_signals(episodes, modules, signature, cache=None,
     the same one across a grid and every arm after the first pays nothing.
     Pass None for a one-shot run.
 
-    `signal_params` reaches `precompute` as keyword arguments and is part of
-    the key, which is what lets a grid sweep a model parameter without
-    editing the block. Empty means the block is called `precompute(ep)`, so
-    a block that never opted in cannot be broken by this.
+    `signal_params` is `{slot: {name: value}}`: each slot's parameters reach
+    only THAT block's `precompute`, as keyword arguments, and are part of the
+    key. A slot with no entry is called `precompute(ep)` exactly as before,
+    so a block that never opted in cannot be broken by a sweep of the other
+    one.
 
     Episodes are keyed by `market_id`, which is unique per market and already
     the key every artefact uses.
@@ -98,14 +117,14 @@ def precompute_signals(episodes, modules, signature, cache=None,
     if cache is None:
         cache = {}
     params = normalise_params(signal_params)
-    kwargs = dict(params)
+    per_slot = {slot: dict(pairs) for slot, pairs in params}
     out = {}
     for ep in episodes:
         key = (signature, params, ep.market_id)
         if key not in cache:
-            cache[key] = (modules["fair"].precompute(ep, **kwargs)
-                          if kwargs else modules["fair"].precompute(ep),
-                          modules["vol"].precompute(ep, **kwargs)
-                          if kwargs else modules["vol"].precompute(ep))
+            cache[key] = tuple(
+                modules[slot].precompute(ep, **per_slot[slot])
+                if per_slot.get(slot) else modules[slot].precompute(ep)
+                for slot in SIGNAL_SLOTS)
         out[ep.market_id] = cache[key]
     return out

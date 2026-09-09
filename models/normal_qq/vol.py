@@ -116,8 +116,23 @@ def _scan(state, spot, age, offset):
     return rv_ewm_var, prev
 
 
-def precompute(ep):
-    """sigma_T at each decision index. NaN until the EWMA has warmed up."""
+def precompute(ep, scale=1.0):
+    """sigma_T at each decision index. NaN until the EWMA has warmed up.
+
+    `scale` multiplies the finished sigma, so a grid can widen or narrow the
+    distribution without editing this file per point (it arrives as a
+    `signal_params` entry and is part of the run's config hash). It defaults
+    to 1.0, which is this block exactly as it was.
+
+    Why the knob exists: over 3.24 M quoting ticks on 2026-08-17..21 this
+    model is badly OVERCONFIDENT -- it says 0.024 where the truth is 0.138,
+    and 0.989 where the truth is 0.937, while the book is inside 0.02
+    throughout. Sweeping `link(z / k)` offline over those ticks, Brier
+    bottoms at k = 1.6: the gap to the book falls from +0.0064 to +0.0019
+    and the extreme-bucket error from -0.11 to -0.05. The residual is
+    tail SHAPE, which a scale cannot fix -- k = 2.5 zeroes the tail error
+    but then under-confidences the middle and Brier rises again.
+    """
     spot = np.asarray(ep.spot, dtype="float64")
     age = np.asarray(ep.spot_age_ms, dtype="float64")
     bucket_s = BUCKET_MS / 1000.0
@@ -157,4 +172,4 @@ def precompute(ep):
             tau_eff = effective_tte(ep.tte_s(i))
             out[i] = ewm_rv * math.sqrt(tau_eff / SECONDS_PER_YEAR)
 
-    return out
+    return out if scale == 1.0 else out * scale

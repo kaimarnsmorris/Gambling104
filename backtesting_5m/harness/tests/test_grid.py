@@ -78,16 +78,30 @@ def test_signal_params_are_part_of_the_key(episodes):
     """A vol-scale sweep changes no file, so the file digest cannot see it.
     Without the params in the key every arm would get arm one's sigma."""
     mods, cache = _modules(), {}
-    a = precompute_signals(episodes, mods, "sig", cache, {"scale": 1.0})
-    b = precompute_signals(episodes, mods, "sig", cache, {"scale": 2.0})
+    a = precompute_signals(episodes, mods, "sig", cache,
+                           {"vol": {"scale": 1.0}})
+    b = precompute_signals(episodes, mods, "sig", cache,
+                           {"vol": {"scale": 2.0}})
     assert mods["vol"].calls == 6
     assert a["m0"][1][0] != b["m0"][1][0], "different scale, different sigma"
 
 
-def test_signal_params_reach_the_block_as_keywords(episodes):
+def test_signal_params_reach_only_the_slot_they_name(episodes):
+    """The bug this shape exists to prevent. A flat dict has to be broadcast
+    to both blocks, so a `scale` meant for `vol` arrives at `fair.precompute`
+    as an unexpected keyword and the whole sweep dies on its first arm --
+    which is exactly what happened."""
     mods = _modules()
-    precompute_signals(episodes, mods, "sig", {}, {"scale": 3.0})
+    precompute_signals(episodes, mods, "sig", {}, {"vol": {"scale": 3.0}})
     assert mods["vol"].seen[0] == {"scale": 3.0}
+    assert mods["fair"].seen[0] == {}, "fair must be called untouched"
+
+
+def test_a_parameter_for_a_slot_that_is_not_a_signal_block_raises():
+    """Silently ignoring it would sweep nothing and report the baseline
+    under the swept arm's label -- a wrong number with a confident name."""
+    with pytest.raises(ValueError, match="not one of"):
+        normalise_params({"execution": {"requote_every": 5}})
 
 
 def test_a_block_that_takes_only_the_episode_is_called_unchanged(episodes):
@@ -102,8 +116,8 @@ def test_a_block_that_takes_only_the_episode_is_called_unchanged(episodes):
 
 
 def test_params_are_order_free_so_one_spelling_is_one_entry():
-    assert (normalise_params({"scale": 2, "floor": 1})
-            == normalise_params({"floor": 1, "scale": 2}))
+    assert (normalise_params({"vol": {"scale": 2, "floor": 1}})
+            == normalise_params({"vol": {"floor": 1, "scale": 2}}))
 
 
 def test_the_signature_follows_block_content_not_its_path(tmp_path):
@@ -155,10 +169,10 @@ def test_signal_params_change_the_config_hash():
     failure `fill_params` already caused once."""
     from harness.blocks.defaults.fees import FeeSchedule
     args = (QuoteParams(), ExecConfig(), Sample(), Output(), FeeSchedule())
-    a = config_dict(*args, signal_params={"scale": 1.0})
-    b = config_dict(*args, signal_params={"scale": 2.0})
+    a = config_dict(*args, signal_params={"vol": {"scale": 1.0}})
+    b = config_dict(*args, signal_params={"vol": {"scale": 2.0}})
     assert a != b
-    assert a["signal_params"] == {"scale": 1.0}
+    assert a["signal_params"] == {"vol": {"scale": 1.0}}
 
 
 # -- the grid entry point ---------------------------------------------------
@@ -170,9 +184,9 @@ def test_an_unlabelled_grid_gets_positional_names():
 
 def test_pairs_and_arms_are_both_accepted():
     arms = as_arms([("wide", QuoteParams(e_p=0.05)),
-                    Arm(label="scaled", signal_params={"scale": 2.0})])
+                    Arm(label="scaled", signal_params={"vol": {"scale": 2.0}})])
     assert [a.label for a in arms] == ["wide", "scaled"]
-    assert arms[1].signal_params == (("scale", 2.0),)
+    assert arms[1].signal_params == (("vol", (("scale", 2.0),)),)
 
 
 def test_duplicate_labels_are_refused():
