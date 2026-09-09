@@ -65,10 +65,10 @@ IN-WINDOW observations only, so the quoting window is bit for bit what it was
 before warm-up existed and the only variable that moved is the EWMA's history.
 It costs almost nothing to leave: measured over the 568 markets of
 2026-08-19..20, the gate clears at in-window index 6 (0.6 s) at the median and
-index 8 at the 99th percentile, 0.34 % of the window on average. This block is
-also kept identical to
-`../../investigations/2026-09-09-vol-fixed/vol_baseline.py`, which is the
-control arm of the sigma investigation -- the two must not drift apart.
+index 8 at the 99th percentile, 0.34 % of the window on average. This block was
+the control arm of the sigma investigation, whose calibrated variant lived in
+`investigations/2026-09-09-vol-fixed/` until that folder was deleted; it is in
+git history, and this file is now the only copy.
 
 The observation scan is duplicated from `fair.py` on purpose; see the note
 there.

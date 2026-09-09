@@ -226,3 +226,33 @@ def test_the_catalog_chainlink_entry_names_a_receipt_per_value():
         "px": "px_first_recv_ns",
         "twap30": "twap30_first_recv_ns",
         "twap60": "twap60_first_recv_ns"}
+
+
+def test_a_mapping_that_points_at_another_fields_receipt_raises():
+    """A presence test would pass this and reinstate the whole defect.
+
+    Mapping `twap60` to the PRICE's receipt satisfies "is it declared?" while
+    putting twap60 on the grid before it arrived -- the original bug, now
+    written down explicitly instead of inherited from a default.
+    """
+    with pytest.raises(StreamInvalid) as e:
+        check_receipt_map("rtds", ("px", "px_first_recv_ns", "twap60",
+                                   "twap60_first_recv_ns"),
+                          ("px", "twap60"), "px_first_recv_ns",
+                          (("twap60", "px_first_recv_ns"),))
+    assert "twap60_first_recv_ns" in str(e.value)
+
+
+def test_a_partial_mapping_that_would_drop_a_field_raises():
+    """Declaring pairs narrows the stream's values to the mapped names.
+
+    So mapping twap60 alone does not mis-align px -- it removes px from the
+    grid entirely. That is quieter than the bug it replaces and surfaces as a
+    KeyError somewhere else, so it has to fail here.
+    """
+    with pytest.raises(StreamInvalid) as e:
+        check_receipt_map("rtds", ("px", "px_first_recv_ns", "twap60",
+                                   "twap60_first_recv_ns"),
+                          ("twap60",), "px_first_recv_ns",
+                          (("twap60", "twap60_first_recv_ns"),))
+    assert "'px'" in str(e.value)

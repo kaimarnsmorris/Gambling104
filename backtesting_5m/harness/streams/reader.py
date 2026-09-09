@@ -86,7 +86,10 @@ def grid_stream(df, open_ts, value_cols, time_col="recv_ns",
     guarantee rather than re-earning it.
 
     `value_time_cols` is a tuple of (value_col, receipt_col) pairs: a column
-    named there is bucketed on ITS OWN receipt, everything else on `time_col`.
+    named there is bucketed on ITS OWN receipt, everything else in
+    `value_cols` on `time_col`. Note that `register()` narrows `value_cols`
+    to the mapped names when a stream declares any pair, so in practice the
+    "everything else" case arises only for a caller passing both by hand.
     The columns are grouped by receipt and the bucketing above runs once per
     group, so the per-column case costs one extra pass per distinct receipt
     and changes nothing about how a bucket is chosen.

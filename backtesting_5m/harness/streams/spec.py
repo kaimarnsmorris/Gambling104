@@ -152,13 +152,46 @@ def check_receipt_map(name, columns, values, time_col, value_time_cols=()):
     the stream-level `time_col` already IS one of X's own receipts. Otherwise
     this raises, naming X and the receipt being ignored. Loud at registration
     beats a 4.6 % lookahead nobody reads.
+
+    A mapping is checked, not trusted. Declaring `("twap60",
+    "px_first_recv_ns")` would satisfy a presence test while reinstating the
+    exact defect this function exists to catch, so where `X` has receipts of
+    its own the mapping must name one of them.
     """
     columns = set(columns)
-    mapped = {v for v, _ in value_time_cols}
+    mapped = dict(value_time_cols)
+
+    # Declaring pairs narrows `values` to the mapped names, so a PARTIAL
+    # mapping does not mis-align the rest -- it drops them off the grid
+    # entirely, with no error and a KeyError far from the cause. Any column in
+    # the file that owns a receipt is a real field, so if some are mapped they
+    # all must be.
+    if mapped:
+        declared = set(values)
+        unmapped = sorted(c for c in columns
+                          if receipt_siblings(c, columns)
+                          and c not in mapped and c not in declared)
+        if unmapped:
+            raise StreamInvalid(
+                f"{name}: value_time_cols maps "
+                f"{', '.join(map(repr, sorted(mapped)))} but the file also "
+                f"carries {', '.join(map(repr, unmapped))} with receipts of "
+                f"their own. Declaring any pair declares the stream's value "
+                f"columns, so these would be silently dropped rather than "
+                f"mis-aligned. Map them too, or split them into their own "
+                f"stream.")
+
     for col in values:
-        if col in mapped:
-            continue
         siblings = receipt_siblings(col, columns)
+        if col in mapped:
+            if siblings and mapped[col] not in siblings:
+                raise StreamInvalid(
+                    f"{name}: value column {col!r} is mapped to "
+                    f"{mapped[col]!r}, which is not one of its own receipts "
+                    f"({', '.join(map(repr, siblings))}). A mapping that "
+                    f"points at another field's arrival is the same lookahead "
+                    f"as no mapping at all, just harder to see.")
+            continue
         if not siblings or time_col in siblings:
             continue
         raise StreamInvalid(

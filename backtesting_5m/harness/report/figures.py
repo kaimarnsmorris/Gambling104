@@ -1,9 +1,11 @@
 """Generic figures over one or many runs.
 
 Never called by the engine. Bespoke figures belong in the investigation that
-wants them, composed from the same loader -- see
-`investigations/2026-09-09-normal-qq-eval/plot_report.py` for the full,
-per-run, per-market detail set these are generalised from.
+wants them, composed from the same loader. These four are the generic core
+of a per-run, per-market detail set that lived in
+`investigations/2026-09-09-normal-qq-eval/plot_report.py`; that folder has
+since been deleted, so the fuller version is in git history rather than on
+disk.
 """
 import matplotlib
 matplotlib.use("Agg")
