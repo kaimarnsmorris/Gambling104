@@ -46,3 +46,50 @@ def test_no_require_keeps_everything(flat_episode):
 def test_require_spot_still_works_for_existing_callers(flat_episode):
     kept, _ = select_episodes(_eps(flat_episode), Sample(require_spot=True))
     assert len(kept) == 4          # flat_episode has spot
+
+
+# -- a require clause that can only ever select nothing --------------------
+
+def test_requiring_a_pre_gridded_panel_raises_instead_of_dropping_everything(
+        flat_episode):
+    """`load_episodes` never attaches a pre-gridded panel to `ep.streams` --
+    there is nothing to grid and gridding it would drop every row -- so
+    `require=("book",)` matched no episode, dropped 100 % of the sample and
+    reported a headline over zero markets. That reads exactly like a real
+    result. Silently selecting zero markets is the failure this branch has
+    now hit twice."""
+    from harness.streams import catalog, clear_registry
+
+    clear_registry()
+    try:
+        catalog.install()
+        with pytest.raises(ValueError, match="pre-gridded"):
+            select_episodes(_eps(flat_episode), Sample(require=("book",)))
+        with pytest.raises(ValueError, match="spot_london_usdt"):
+            select_episodes(_eps(flat_episode),
+                            Sample(require=("spot_london_usdt",)))
+    finally:
+        clear_registry()
+
+
+def test_requiring_spot_is_still_answered_by_has_spot(flat_episode):
+    """`spot` is the one pre-gridded name a require clause may use: it is
+    answered by `ep.has_spot`, not by `ep.streams`."""
+    from harness.streams import catalog, clear_registry
+
+    clear_registry()
+    try:
+        catalog.install()
+        kept, _ = select_episodes(_eps(flat_episode), Sample(require=("spot",)))
+        assert len(kept) == 4
+    finally:
+        clear_registry()
+
+
+def test_an_unregistered_require_name_is_still_a_drop_not_an_error(
+        flat_episode):
+    """The guard is about a name that CANNOT match. An unregistered one is
+    reported downstream, and a sample detail must not be what fails a run."""
+    kept, dropped = select_episodes(
+        _eps(flat_episode), Sample(require=("nothing_registers_this",)))
+    assert kept == [] and dropped["nothing_registers_this"] == 4

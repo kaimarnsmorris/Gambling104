@@ -8,6 +8,7 @@ import pandas as pd
 from harness import paths
 from harness.core import provenance, stats
 from harness.core.loop import run_episode
+from harness.streams import registry
 
 #: Measured twice on this exact substrate: the 100 ms grid arm earns more than
 #: an events arm by this much per market (CI [+0.053, +0.239]; replicated on
@@ -106,9 +107,42 @@ def config_dict(quote, execn, sample, output, fee_schedule, streams=()):
     }
 
 
+#: `require=("spot",)` is answered by `ep.has_spot`, not by `ep.streams` --
+#: the panel predates the registry and `load_episodes` reads it by its own
+#: path. It is the ONE pre-gridded name a require clause can use.
+_REQUIRABLE_PRE_GRIDDED = ("spot",)
+
+
+def check_require(sample):
+    """Refuse a `require` clause that can only ever select nothing.
+
+    `load_episodes` never attaches a pre-gridded stream to `ep.streams` --
+    there is nothing to grid, and gridding it would drop every row -- so
+    `require=("book",)` or `require=("spot_london_usdt",)` matches no episode
+    and silently drops 100 % of the sample, reporting a drop count and a
+    headline over zero markets. Selecting zero markets is a failure this
+    branch has now hit twice, and it reads exactly like a real result.
+    """
+    for name in sample.require:
+        if name in _REQUIRABLE_PRE_GRIDDED:
+            continue
+        try:
+            reg = registry.resolve(name)
+        except registry.StreamNotRegistered:
+            continue                    # unregistered: reported downstream
+        if reg.pre_gridded:
+            raise ValueError(
+                f"require={name!r} can never match: {name!r} is a pre-gridded "
+                f"panel, already on the decision grid, so it is never "
+                f"attached to ep.streams and every episode would be dropped. "
+                f"Only {_REQUIRABLE_PRE_GRIDDED[0]!r} is answerable this way, "
+                f"via ep.has_spot.")
+
+
 def select_episodes(episodes, sample):
     """(kept, dropped_counts). Drop counts are reported in summary.json so a
     require clause that halves the sample is visible rather than inferred."""
+    check_require(sample)
     dropped = {}
     out = []
     for ep in episodes:
@@ -222,6 +256,11 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
 
     config = config_dict(quote, execn, sample, output, fee_schedule, streams)
 
+    # Selected BEFORE the run folder is created: a `require` clause that
+    # cannot match raises here, and a run that never starts should not leave
+    # a folder and a manifest behind claiming it did.
+    selected, dropped = select_episodes(episodes, sample)
+
     run_dir = provenance.new_run_dir(investigation_dir, config)
     provenance.write_manifest(run_dir, config, resolved, inputs=tuple(inputs),
                               seeds=output.seeds)
@@ -236,7 +275,6 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
         "fill_params": dict(execn.fill_params),
     }
 
-    selected, dropped = select_episodes(episodes, sample)
     tick_ids = set(output.tick_markets)
 
     all_fills, all_markets, all_ticks = [], [], []
