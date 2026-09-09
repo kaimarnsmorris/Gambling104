@@ -26,7 +26,7 @@ def _run(tmp_path, episodes, **kw):
     kw.setdefault("quote", QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0))
     kw.setdefault("execn", ExecConfig())
     kw.setdefault("sample", Sample())
-    kw.setdefault("output", Output(plots=False))
+    kw.setdefault("output", Output())
     return run(str(tmp_path), episodes=episodes, **kw)
 
 
@@ -143,8 +143,7 @@ def test_tick_output_is_written_only_when_asked(tmp_path, episodes):
     assert not os.path.exists(os.path.join(plain["run_dir"], "ticks.parquet"))
 
     ticked = _run(tmp_path, episodes,
-                  output=Output(emit_ticks=True, tick_markets=("m0",),
-                                plots=False))
+                  output=Output(emit_ticks=True, tick_markets=("m0",)))
     ticks_path = os.path.join(ticked["run_dir"], "ticks.parquet")
     assert os.path.exists(ticks_path)
     import pandas as pd
@@ -201,8 +200,7 @@ def test_gates_run_on_every_result(tmp_path, episodes):
 
 
 def test_multiple_seeds_are_all_reported(tmp_path, episodes):
-    result = _run(tmp_path, episodes, output=Output(seeds=(0, 1, 2),
-                                                    plots=False))
+    result = _run(tmp_path, episodes, output=Output(seeds=(0, 1, 2)))
     assert len(result["summary"]["per_seed"]) == 3
 
 

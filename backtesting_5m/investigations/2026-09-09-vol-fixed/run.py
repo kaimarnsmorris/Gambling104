@@ -166,7 +166,7 @@ def main():
             res = run(arm_dir, quote=QUOTE,
                       execn=ExecConfig(latency=LatencyModel()),
                       sample=Sample(require_spot=True, days=days),
-                      output=Output(seeds=SEEDS, plots=False),
+                      output=Output(seeds=SEEDS),
                       episodes=episodes, inputs=INPUTS)
             head = res["summary"]["headline"]
             lo, hi = stats.day_blocked_ci(

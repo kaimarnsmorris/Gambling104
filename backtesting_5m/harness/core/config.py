@@ -72,4 +72,3 @@ class Output:
     emit_ticks: bool = False
     tick_markets: tuple = ()
     seeds: tuple = (0,)
-    plots: bool = True

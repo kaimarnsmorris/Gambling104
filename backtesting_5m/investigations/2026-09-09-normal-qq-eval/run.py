@@ -107,7 +107,7 @@ def main():
         HERE, quote=QUOTE,
         execn=ExecConfig(latency=LatencyModel()),
         sample=sample,
-        output=Output(seeds=(0, 1, 2), plots=True),
+        output=Output(seeds=(0, 1, 2)),
         episodes=episodes,
         inputs=INPUTS,
     )
@@ -129,7 +129,7 @@ def main():
         HERE, quote=QUOTE,
         execn=ExecConfig(latency=LatencyModel()),
         sample=sample,
-        output=Output(seeds=(0,), plots=False),
+        output=Output(seeds=(0,)),
         episodes=sweep_episodes,
         inputs=INPUTS,
     )
@@ -155,7 +155,7 @@ def main():
         execn=ExecConfig(latency=LatencyModel()),
         sample=Sample(require_spot=True, markets=tuple(chosen)),
         output=Output(emit_ticks=True, tick_markets=tuple(chosen),
-                      seeds=(0,), plots=False),
+                      seeds=(0,)),
         episodes=detail_episodes,
         inputs=INPUTS,
     )

@@ -34,7 +34,7 @@ def _sweep(tmp_path, episodes):
         quote=QuoteParams(e_p=0.0, shares=10.0, max_pos=10.0),
         execn=ExecConfig(),
         sample=Sample(),
-        output=Output(plots=False),
+        output=Output(),
         episodes=episodes,
     )
 
