@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gambling104-harness"
+version = "0.1.0"
+description = "Backtesting harness for the BTC up/down 5 m book"
+requires-python = ">=3.13"
+dependencies = ["numpy>=2.2", "pandas>=2.2", "pyarrow>=19", "matplotlib>=3.10"]
+
+[project.optional-dependencies]
+fallback = ["polars>=1.40"]
+
+[tool.setuptools.packages.find]
+include = ["harness*"]
+
+[tool.pytest.ini_options]
+testpaths = ["harness/tests"]
