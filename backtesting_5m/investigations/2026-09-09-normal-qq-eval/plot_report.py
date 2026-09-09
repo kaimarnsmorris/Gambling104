@@ -62,26 +62,33 @@ SELL_MARKER = dict(marker="v", color="tab:red", s=28, zorder=5, label="sell")
 RTDS_COVERED_DAYS = ("2026-08-19", "2026-08-20")
 
 
-def _rtds_twap60_for_market(open_ts):
-    """(tte_s, twap60) for one market's window, or (None, None) if uncovered.
+def _rtds_for_market(open_ts):
+    """(tte_s, px, twap60) for one market's window, or Nones if uncovered.
 
     RTDS is 1 Hz; `oracle_ms` is epoch ms, `open_ts` is epoch seconds. No
     interpolation -- only the actual 1 s samples inside [open_ts, open_ts+300)
     are returned, converted to seconds-to-expiry the same way the tick axis
     is.
+
+    Both series are returned. `twap60` is the settlement variable but lags by
+    construction, being a trailing 60 s average; the RAW oracle price `px` is
+    where Chainlink actually is at each instant. `px` is also the honest
+    comparator for the venue spot line: this panel is on a BTC/USD basis now,
+    so the two should very nearly coincide, and a visible gap between them is
+    a basis problem rather than a market one.
     """
     lo_ms, hi_ms = open_ts * 1000, (open_ts + 300) * 1000
     rtds = read_parquet(paths.RTDS_BTC,
-                        columns=["oracle_ms", "twap60"],
+                        columns=["oracle_ms", "px", "twap60"],
                         filters=[("oracle_ms", ">=", lo_ms),
                                 ("oracle_ms", "<", hi_ms)])
     if not len(rtds):
-        return None, None
-    rtds = rtds.dropna(subset=["twap60"]).sort_values("oracle_ms")
+        return None, None, None
+    rtds = rtds.dropna(subset=["px", "twap60"]).sort_values("oracle_ms")
     if not len(rtds):
-        return None, None
+        return None, None, None
     tte_s = 300.0 - (rtds["oracle_ms"].to_numpy() / 1000.0 - open_ts)
-    return tte_s, rtds["twap60"].to_numpy()
+    return tte_s, rtds["px"].to_numpy(), rtds["twap60"].to_numpy()
 
 
 def _load_run(run_dir):
@@ -194,12 +201,14 @@ def plot_market_detail(ticks, ledger, ep, path):
     ax4.plot(tte_s, t["s"], color="tab:blue", lw=1.2,
             label="model E[A] (fair.precompute)")
 
-    rtds_tte, rtds_twap60 = _rtds_twap60_for_market(ep.open_ts)
+    rtds_tte, rtds_px, rtds_twap60 = _rtds_for_market(ep.open_ts)
     if rtds_tte is not None:
+        ax4.plot(rtds_tte, rtds_px, color="tab:green", lw=0.9, alpha=0.85,
+                label="Chainlink px (raw oracle)")
         ax4.plot(rtds_tte, rtds_twap60, color="tab:red", lw=1.1,
                 label="Chainlink twap60 (settlement variable)")
     else:
-        ax4.text(0.02, 0.05, "Chainlink twap60: no coverage this market",
+        ax4.text(0.02, 0.05, "Chainlink px/twap60: no coverage this market",
                 fontsize=7, color="tab:red", transform=ax4.transAxes)
 
     ax4.axhline(ep.strike, color="0.2", lw=1.2, ls="-",
@@ -211,8 +220,11 @@ def plot_market_detail(ticks, ledger, ep, path):
     ax4.set_xlabel("seconds to expiry")
     ax4.legend(fontsize=6.5, ncol=2, loc="upper left")
 
-    for ax in axes:
-        ax.invert_xaxis()
+    # The four panels share one x-axis, so invert it exactly ONCE. Looping
+    # over `axes` toggles the same shared axis four times -- an even number,
+    # which lands back on the default and makes time run right-to-left. That
+    # is what happened when this figure grew from three panels to four.
+    axes[0].invert_xaxis()
 
     fig.tight_layout()
     fig.savefig(path, dpi=130)

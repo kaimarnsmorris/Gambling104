@@ -8,15 +8,22 @@ DATA = os.path.join(PROJECT, "data")
 PANEL = os.path.join(DATA, "book_5m_100ms.parquet")
 STRIKES = os.path.join(DATA, "strikes_5m.parquet")
 RESULTS = os.path.join(DATA, "results")
-SPOT = os.path.join(DATA, "spot_5m_100ms.parquet")
+#: The spot panel, on a BTC/**USD** basis -- the venue's BTC/USDT mid less
+#: the capture's `usdt_basis`. This is the DEFAULT because these markets
+#: settle on Chainlink's BTC/USD 60 s TWAP, so the panel must be quoted in
+#: the same currency as the thing being forecast.
+#:
+#: Measured against the Chainlink oracle over 1.65 M buckets: the legacy
+#: BTC/USDT panel sat +$43.17 high (sd 16.36); this one sits +$4.50
+#: (sd 7.44). The old bias was also TIME-VARYING -- day-means drifting
+#: ~$40 to ~$10 across the sample -- so no fitted intercept could absorb
+#: it. See harness/build/spot_5m_100ms.py.
+SPOT = os.path.join(DATA, "spot_5m_100ms_usd.parquet")
+SPOT_USD = SPOT                      # explicit alias; same file
 
-#: The same panel with `spot` on a BTC/**USD** basis -- the venue's
-#: BTC/USDT mid less the capture's `usdt_basis`. `SPOT` above is the
-#: legacy BTC/USDT panel, biased ~+$43 against the BTC/USD Chainlink
-#: feed these markets actually settle on; see
-#: harness/build/spot_5m_100ms.py. Kept as a separate constant while
-#: readers migrate -- SPOT will be repointed here once they have.
-SPOT_USD = os.path.join(DATA, "spot_5m_100ms_usd.parquet")
+#: The superseded BTC/USDT panel. Kept only so a historical run folder can
+#: be reproduced against the data it actually used. Do not build on it.
+SPOT_LEGACY_USDT = os.path.join(DATA, "spot_5m_100ms.parquet")
 FAIR_DIR = os.path.join(DATA, "fair")
 INVESTIGATIONS = os.path.join(PROJECT, "investigations")
 
