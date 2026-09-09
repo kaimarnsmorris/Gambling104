@@ -1,6 +1,144 @@
 # normal_qq_basic — evaluation, 2026-09-09 (unified execution policy)
 
-> ## RE-RUN 2026-09-09, warm-up on — READ THIS SECTION FIRST
+> ## FULL-WINDOW RE-RUN 2026-09-09 — READ THIS SECTION FIRST
+>
+> The sample was never bounded by the markets. It was bounded by one feed:
+> `stream_venue_l1` on `Z:` does not start until 2026-08-17 04:19 UTC, so the
+> spot panel could not either, and the priceable sample was 1,102 markets. The
+> sibling capture's own `london/panel_100ms.parquet` starts 2026-08-14
+> 02:54:56.9 — the same instant the Chainlink RTDS feed does — so a panel built
+> from it (`harness.paths.SPOT_LONDON`,
+> `harness/build/spot_5m_100ms_london.py`) widens the three-way overlap to
+> **2026-08-14 02:55 .. 2026-08-21 02:00** and the scored sample to **1,971
+> markets**, an extra 2.9 days. Quote parameters are UNCHANGED and still
+> unoptimised (`e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10`), warm-up is
+> still 900 s: the only thing that moved is the window.
+>
+> ⚠ **THAT PANEL'S `spot` IS BTC/USDT AND UNCORRECTED.** The London recorder
+> kept the raw venue book and no `usdt_basis`, so its `spot` sits ~+$56 above
+> the settlement oracle (median +62, sd 18) and `spot == spot_usdt` on every
+> row. This is safe ONLY because `fair.py` learns the whole venue-to-oracle
+> basis itself off `ep.spot_usdt` and `ep.chainlink` and never reads `ep.spot`.
+> The panel emits no `usdt_basis` column at all, so a consumer that assumes a
+> USD basis raises rather than being quietly wrong by ~0.17 of a 300 s sigma.
+> The per-market detail figures label the spot line accordingly, and the BTC
+> panel now shows the grey spot line ~$65 clear of the oracle with the blue
+> E[A] sitting on it — which is the basis model working, not a broken one.
+>
+> **Markets without an oracle are still EXCLUDED, not scored as $0.00.** 2,241
+> book-panel markets exist over these 8 days; 1,971 carry a settlement oracle
+> and are scored. On this window the oracle-covered set and the spot-covered
+> set are the same 1,971 markets, so `require_spot` and the oracle filter agree
+> exactly — but the filter is still applied, because `require_spot` alone does
+> not know about Chainlink.
+>
+> ### The headline
+>
+> | | 08-17..21 (`SPOT_ORACLE_WINDOW`) | **08-14..21 (`SPOT_LONDON`)** |
+> |---|---|---|
+> | markets | 1,102 | **1,971** |
+> | fills (seed 0) | 38,473 | **60,455** |
+> | shares | 384,730 | **604,550** |
+> | c/share (`pnl_net`) | −1.299 | **−1.244** |
+> | $/market (`pnl_net`) | −4.534 | **−3.816** |
+> | day-blocked CI ($/mkt) | [−6.717, −2.531] | **[−5.529, −2.295]** |
+> | per-period $/mkt | −4.59 / −4.35 / −7.49 | **−2.42 / −4.10 / −6.73** |
+> | delete-top-10 $/mkt | −4.534 → −4.866 | **−3.816 → −4.056** |
+> | gates | pass | **pass** |
+>
+> The loss is smaller on the wider window but it is the same loss: same sign,
+> same order of magnitude, all three gates still pass, and the CI still
+> excludes zero. 2.9 extra days did not rescue it.
+>
+> ### GROSS vs NET — the split the cumulative plot now draws
+>
+> `cum_pnl_days.png` now carries the pre-fee line in grey behind the net line,
+> with the fee drag shaded and annotated in dollars and in c/share. It answers
+> a question the net line alone could not, and the answer is **not** the one
+> the c/share figures alone suggested.
+>
+> | | 08-17..21 | **08-14..21** |
+> |---|---|---|
+> | gross, before fees | −$2,310 (−0.600 c/share) | **−$3,001 (−0.496 c/share)** |
+> | fee drag | −$2,687 (−0.698 c/share) | **−$4,521 (−0.748 c/share)** |
+> | net | −$4,997 (−1.299 c/share) | **−$7,522 (−1.244 c/share)** |
+> | fee share of the loss | 53.8 % | **60.1 %** |
+>
+> So fees are the LARGER half of the loss — 60 % of it — but they are not the
+> whole of it. Gross is −0.496 c/share, which is a real trading loss and not
+> noise around zero. The honest statement is: **a fee-free version of this
+> strategy would still lose money, at about 40 % of the current rate.**
+>
+> The daily breakdown sharpens that, and is the more interesting finding:
+>
+> | day | markets | fills | gross c/share | fee c/share | net c/share | net $/mkt |
+> |---|---|---|---|---|---|---|
+> | 2026-08-14 | 252 | 8,134 | −0.478 | 0.862 | −1.339 | −4.32 |
+> | 2026-08-15 | 277 | 6,275 | **+0.212** | 0.830 | −0.618 | −1.40 |
+> | 2026-08-16 | 288 | 6,233 | **+0.005** | 0.812 | −0.806 | −1.75 |
+> | 2026-08-17 | 287 | 8,797 | **−1.529** | 0.797 | −2.325 | −7.13 |
+> | 2026-08-18 | 275 | 8,254 | −0.107 | 0.814 | −0.921 | −2.76 |
+> | 2026-08-19 | 284 | 9,197 | −0.030 | 0.692 | −0.722 | −2.34 |
+> | 2026-08-20 | 284 | 12,094 | **−0.971** | 0.624 | −1.595 | −6.79 |
+> | 2026-08-21 | 24 | 1,471 | −0.773 | 0.206 | −0.979 | −6.00 |
+>
+> On four of the eight days (08-15, 08-16, 08-18, 08-19) gross is within
+> ±0.21 c/share of zero — those days are pure fee drag. The aggregate gross
+> loss is carried almost entirely by 08-17 (−1.529) and 08-20 (−0.971), the two
+> days with the most fills. That is a concentration worth chasing, and it is
+> invisible on a net-only chart, where every day looks uniformly bad.
+>
+> ### Maker/taker (`split_headline.py`, markout-based, seed 0)
+>
+> | arm | fills | markets touched | mean markout (c/share) | mean fee (c/share) | net c/share | $/market (÷1,971) |
+> |---|---|---|---|---|---|---|
+> | maker | 19,803 | 1,923 | **−2.522** | −0.260 (paid to us) | −2.261 | −2.272 |
+> | taker | 40,652 | 1,969 | **−0.495** | +1.239 (paid by us) | −1.734 | −3.576 |
+> | overall | 60,455 | 1,970 | −1.159 | +0.748 | −1.906 | −5.848 |
+>
+> Both markouts reproduce the 08-17..21 run almost exactly (maker −2.550 →
+> −2.522, taker −0.491 → −0.495), which says the execution economics are a
+> property of the strategy and not of the window. The maker arm is where the
+> forecast error lives; the taker arm is where the fee lives.
+>
+> Latency ladder (450-market subsample, seed 20260909, single sweep seed 0),
+> c/share: **−0.641 / −0.641 / −0.708 / −0.765 / −0.829** at 0 / 100 / 200 /
+> 250 / 500 ms. Fill arms: optimistic −0.641, adverse_lag −0.641, penetration
+> −0.684. Narrow ranges, consistent sign, as before.
+>
+> ### Calibration got WORSE relative to the book, not better
+>
+> Unconditional, 9,847 observations (5 indices × 1,971 markets), model and book
+> scored on identical rows:
+>
+> | | 08-17..21 | **08-14..21** |
+> |---|---|---|
+> | model Brier | 0.1345 | **0.1507** |
+> | book Brier, identical rows | 0.1285 | **0.1330** |
+> | model − book | +0.0060 | **+0.0177** |
+> | p ≥ 0.999 fraction | 0.204 | **0.201** |
+> | ...and its realised frequency | 0.972 | **0.952** |
+> | worst decile gap | −0.130 | **−0.142** |
+>
+> The gap to the book roughly TRIPLED. The book barely moved (0.1285 →
+> 0.1330); the model degraded (0.1345 → 0.1507). The 08-17..21 claim that the
+> model had "closed to within 0.006 Brier of the book" was a property of those
+> five days, and does not hold across the recorder's full window. The residual
+> error keeps its old sign: 20.1 % of observations sit at p ≥ 0.999 and settle
+> in the money 95.2 % of the time.
+>
+> Run artefacts: `runs/2026-09-09T03-47-59__4e2601/` (headline, all plots),
+> `runs/2026-09-09T03-54-19__3fe78a/` (sweeps), `runs/2026-09-09T03-58-41__7e8c7d/`
+> (ticks for the 4 detail markets). Headline 380 s, sweeps 263 s, episode load
+> 78 s.
+>
+> Everything below this line is the 08-17..21 run, kept verbatim for the
+> before/after.
+
+> ## SUPERSEDED — RE-RUN 2026-09-09 on 2026-08-17..21 only
+>
+> Kept for the before/after. Its sample was bounded by the venue L1 capture's
+> start date, not by the data; see the full-window section above.
 >
 > Four upstream defects have been fixed since every number below was measured:
 > the spot panel was BTC/USDT rather than BTC/USD; `fair.py` now LEARNS the

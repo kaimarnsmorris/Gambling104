@@ -8,8 +8,9 @@ The execution policy is unified -- one run makes and takes -- so maker and
 taker are separated by the ledger's `liquidity` column, not by running the
 harness twice.
 
-    1. cumulative net PnL over the ordered market sequence, day boundaries
-       marked
+    1. cumulative PnL over the ordered market sequence, day boundaries
+       marked -- NET in blue over GROSS (pre-fee) in grey, with the fee drag
+       shaded between them and annotated in dollars and in c/share
     2. per-market detail for 4 traded markets, chosen from the days with
        Chainlink coverage: book/fair/eff quotes with fill markers, position,
        mark-to-market PnL, and a fourth panel in BTC dollar space (venue
@@ -73,10 +74,15 @@ def _rtds_for_market(open_ts):
 
     Both series are returned. `twap60` is the settlement variable but lags by
     construction, being a trailing 60 s average; the RAW oracle price `px` is
-    where Chainlink actually is at each instant. `px` is also the honest
-    comparator for the venue spot line: this panel is on a BTC/USD basis now,
-    so the two should very nearly coincide, and a visible gap between them is
-    a basis problem rather than a market one.
+    where Chainlink actually is at each instant. `px` is also the comparator
+    for the venue spot line, and WHAT THE GAP BETWEEN THEM MEANS DEPENDS ON
+    WHICH SPOT PANEL THE RUN USED. On `paths.SPOT` / `SPOT_ORACLE_WINDOW` the
+    panel is BTC/USD, so the two should very nearly coincide and a visible gap
+    is a basis problem. On `paths.SPOT_LONDON` the panel is BTC/USDT and
+    uncorrected, so a gap of roughly +$50 is EXPECTED and is the USDT premium
+    itself -- the model's own `B_t` is what removes it, which is why the blue
+    E[A] line, not the grey spot line, is the one that should sit on the
+    oracle. `main` labels the spot line accordingly.
 
     ON THE ORACLE'S OWN CLOCK, DELIBERATELY. This selects on `oracle_ms`, the
     stamp Chainlink writes, whereas `harness.build.episodes.load_chainlink`
@@ -117,12 +123,50 @@ def _load_run(run_dir):
 # -- 1. cumulative net PnL, day boundaries marked ---------------------------
 
 def plot_cumulative_pnl(markets, path, title):
+    """Cumulative NET PnL, with GROSS (pre-fee) greyed in behind it.
+
+    The two lines answer a question the net line alone cannot: how much of the
+    loss is a bad forecast and how much is simply the cost of trading. Taker
+    fees have been running ~1.23 c/share against a total loss of ~1.30, so the
+    vertical gap between grey and blue is very nearly the whole story -- and if
+    grey ends near zero, the model is roughly break-even before fees and the
+    finding is "the edge does not cover the fee", not "the forecast is wrong".
+    Those are materially different conclusions, so the split is annotated in
+    dollars AND in c/share rather than left to be eyeballed off the axis.
+
+    Net is drawn last, thicker and in colour, so it stays the dominant series;
+    gross is a light grey line underneath it at a lower z-order.
+    """
     m = markets[markets["seed"] == markets["seed"].iloc[0]].sort_values(
         "open_ts").reset_index(drop=True)
-    cum = m["pnl_net"].fillna(0.0).cumsum()
+    net = m["pnl_net"].fillna(0.0)
+    gross = m["pnl_gross"].fillna(0.0)
+    cum_net = net.cumsum()
+    cum_gross = gross.cumsum()
+
+    # `shares` is the traded volume the c/share denominator uses everywhere
+    # else in this report (summary.json's `c_per_share` = 100 * pnl / shares),
+    # so the same denominator is used here and the three numbers add up.
+    shares = float(m["shares"].fillna(0.0).sum())
+    fee_drag = float(gross.sum() - net.sum())        # >= 0 when fees are paid
+
+    def cps(usd):
+        return 100.0 * usd / shares if shares else float("nan")
+
+    def usd(v):
+        return f"-${abs(v):,.0f}" if v < 0 else f"${v:,.0f}"
 
     fig, ax = plt.subplots(figsize=(10, 4.2))
-    ax.plot(range(len(m)), cum, lw=1.2, color="tab:blue")
+    x = range(len(m))
+    ax.plot(x, cum_gross, lw=1.0, color="0.62", zorder=2,
+            label=(f"gross, before fees: {usd(gross.sum())} "
+                   f"({cps(gross.sum()):+.3f} c/share)"))
+    ax.fill_between(x, cum_net, cum_gross, color="0.62", alpha=0.16, zorder=1,
+                    label=(f"fee drag: {usd(-fee_drag)} "
+                           f"({cps(-fee_drag):+.3f} c/share)"))
+    ax.plot(x, cum_net, lw=1.4, color="tab:blue", zorder=3,
+            label=(f"net, after fees: {usd(net.sum())} "
+                   f"({cps(net.sum()):+.3f} c/share)"))
     ax.axhline(0.0, color="0.6", lw=0.8)
 
     day_changes = m.index[m["day"] != m["day"].shift(1)].tolist()
@@ -133,8 +177,17 @@ def plot_cumulative_pnl(markets, path, title):
                     fontsize=7, va="top", ha="right", color="0.4")
 
     ax.set_xlabel("market (chronological)")
-    ax.set_ylabel("cumulative net PnL, USD")
+    ax.set_ylabel("cumulative PnL, USD")
     ax.set_title(title)
+    # The split goes in the legend TITLE rather than a floating text box, so
+    # it can never land on top of the very lines it is describing.
+    ax.legend(fontsize=8, loc="lower left", framealpha=0.92,
+              title=(f"{len(m):,} markets, {shares:,.0f} shares   |   "
+                     f"gross {cps(gross.sum()):+.3f} "
+                     f"- fees {cps(fee_drag):.3f} "
+                     f"= net {cps(net.sum()):+.3f} c/share"),
+              title_fontsize=8)
+    ax.get_legend().get_title().set_color("0.25")
     fig.tight_layout()
     fig.savefig(path, dpi=130)
     plt.close(fig)
@@ -142,7 +195,7 @@ def plot_cumulative_pnl(markets, path, title):
 
 # -- 2. per-market detail ----------------------------------------------------
 
-def plot_market_detail(ticks, ledger, ep, path):
+def plot_market_detail(ticks, ledger, ep, path, spot_label="venue spot"):
     market_id = ep.market_id
     t = ticks[ticks["market_id"] == market_id].sort_values("t_ms")
     if not len(t):
@@ -208,7 +261,7 @@ def plot_market_detail(ticks, ledger, ep, path):
 
     # -- panel 4: BTC dollar space -------------------------------------
     ax4 = axes[3]
-    ax4.plot(tte_s, t["spot"], color="0.4", lw=0.9, label="venue spot")
+    ax4.plot(tte_s, t["spot"], color="0.4", lw=0.9, label=spot_label)
     ax4.plot(tte_s, t["s"], color="tab:blue", lw=1.2,
             label="model E[A] (fair.precompute)")
 
@@ -348,7 +401,8 @@ def main():
 
     plot_cumulative_pnl(headline["markets"],
                         os.path.join(out_dir, "cum_pnl_days.png"),
-                        "Cumulative net PnL, unified making and taking")
+                        "Cumulative PnL, gross vs net, unified making "
+                        "and taking")
 
     chosen = manifest["chosen_detail_markets"]
     # NOTE: deliberately NOT `markets=tuple(chosen)` here. That turns into a
@@ -362,6 +416,14 @@ def main():
     # `run.py`'s own `detail_episodes = [ep for ep in episodes if ...]`,
     # avoids the pushdown path entirely.
     spot_path = manifest.get("spot_path", paths.SPOT)
+    # The spot line's currency is a property of the panel, not of the plot, and
+    # on `SPOT_LONDON` it is BTC/USDT -- ~$50 clear of the oracle by
+    # construction. Saying so on the axis is the difference between a reader
+    # seeing the USDT premium and a reader seeing a broken model.
+    spot_label = ("venue spot (BTC/USDT, UNCORRECTED)"
+                  if os.path.abspath(spot_path) == os.path.abspath(
+                      paths.SPOT_LONDON)
+                  else "venue spot (BTC/USD)")
     warmup_s = float(manifest.get("warmup_s", 0.0))
     warmup = warmup_s > 0.0
     candidate_eps = load_episodes(spot_path=spot_path,
@@ -375,8 +437,10 @@ def main():
         if ep is None:
             print(f"WARNING: could not load episode for chosen market {mkt}")
             continue
-        ok = plot_market_detail(detail["ticks"], detail["ledger"], ep,
-                                os.path.join(out_dir, f"market_detail_{i}_{mkt}.png"))
+        ok = plot_market_detail(
+            detail["ticks"], detail["ledger"], ep,
+            os.path.join(out_dir, f"market_detail_{i}_{mkt}.png"),
+            spot_label=spot_label)
         if not ok:
             print(f"WARNING: no ticks for chosen market {mkt}")
 

@@ -29,17 +29,28 @@ from harness import paths                                  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-#: THE ORACLE-OVERLAP WINDOW. `paths.SPOT_ORACLE_WINDOW` is the BTC/USD spot
-#: panel rebuilt over 2026-08-17..21, the days on which the book panel, the
-#: venue L1 capture and the Chainlink RTDS feed all exist at once. It replaces
-#: the old 08-19..24 sample because `fair.py` learns its basis from the oracle
-#: and returns NaN without one: on the old panel only 08-19 and 08-20 had a
-#: Chainlink line, so a six-day headline was really a two-day one. Two of
-#: these five days are partial at the ends, both from the source captures --
-#: the venue L1 stream starts 04:19 UTC on 08-17, and the oracle stops at
-#: 01:59 UTC on 08-21.
-SPOT_DAYS = ("2026-08-17", "2026-08-18", "2026-08-19",
-            "2026-08-20", "2026-08-21")
+#: THE FULL RECORDER WINDOW. `paths.SPOT_LONDON` is the spot panel built from
+#: the London recorder's own 100 ms venue panel rather than from
+#: `stream_venue_l1`, and it matters because that recorder starts where the
+#: Chainlink oracle starts. The three feeds this run needs at once now overlap
+#: on 2026-08-14 02:55 .. 2026-08-21 02:00 instead of 2026-08-17 04:19 ..
+#: 2026-08-21 02:00, which is 1,971 markets with spot against 1,391 -- and
+#: 2.9 extra days of them. The previous sample
+#: (`paths.SPOT_ORACLE_WINDOW`, 08-17..21, 1,102 scored markets) was bounded
+#: by the venue capture's start date, not by anything about the markets.
+#:
+#: ITS `spot` IS BTC/USDT AND UNCORRECTED. The London recorder kept the raw
+#: venue book and no `usdt_basis`, so this panel sits ~$50 above the
+#: settlement feed and `spot == spot_usdt` on every row. That is safe HERE and
+#: only here because `fair.py` learns the whole venue-to-oracle basis itself
+#: (`B_t = ewm(spot_usdt - chainlink)`) and never reads `ep.spot`; `vol.py`
+#: does read `ep.spot`, but only in log returns, where a basis moving on the
+#: USDT peg's timescale contributes nothing measurable. Any block that took
+#: `ep.spot` for a USD price would be wrong by ~0.17 of a 300 s sigma, about
+#: 7 c of probability bias toward UP, and no gate downstream would catch it.
+#: See `harness/build/spot_5m_100ms_london.py`.
+SPOT_DAYS = ("2026-08-14", "2026-08-15", "2026-08-16", "2026-08-17",
+            "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21")
 
 #: Pre-open history handed to the signal blocks. `fair.py`'s basis halflife is
 #: 180 s and only converges because of this; `vol.py`'s realised-variance EWMA
@@ -54,15 +65,16 @@ QUOTE = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0)
 #: takes the panel and the strikes from their defaults, so all three are read
 #: -- and the panel is the primary data behind every number here. Listing only
 #: the spot left the book these results were traded against unrecorded.
-SPOT_PATH = paths.SPOT_ORACLE_WINDOW
+SPOT_PATH = paths.SPOT_LONDON
 INPUTS = (paths.PANEL, paths.STRIKES, SPOT_PATH, paths.RTDS_BTC)
 
-#: Chainlink's 1 s RTDS feed (harness.paths.RTDS_BTC) stops at 01:59 UTC on
-#: 2026-08-21, so these four of the five SPOT_DAYS carry a full-day twap60
-#: line for the per-market detail plot. The four detail markets are drawn
-#: from this subset so every detail figure's BTC panel is populated.
-RTDS_COVERED_DAYS = ("2026-08-17", "2026-08-18",
-                    "2026-08-19", "2026-08-20")
+#: Chainlink's 1 s RTDS feed (harness.paths.RTDS_BTC) runs 2026-08-14 02:54
+#: to 2026-08-21 01:59 UTC, so the first and last days of SPOT_DAYS carry only
+#: a partial twap60 line. These six carry a full-day one, and the four detail
+#: markets are drawn from them so every detail figure's BTC panel is
+#: populated.
+RTDS_COVERED_DAYS = ("2026-08-15", "2026-08-16", "2026-08-17",
+                    "2026-08-18", "2026-08-19", "2026-08-20")
 
 SWEEP_SAMPLE_SIZE = 450
 SWEEP_SEED_RNG = 20260909

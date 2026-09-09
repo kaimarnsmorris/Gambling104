@@ -10,9 +10,12 @@
     "tick": 0.01,
     "shares": 10.0
   },
-  "spot_path": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\data\\spot_5m_100ms_usd_0817_0821.parquet",
+  "spot_path": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\data\\spot_5m_100ms_usdt_london.parquet",
   "warmup_s": 900.0,
   "spot_days": [
+    "2026-08-14",
+    "2026-08-15",
+    "2026-08-16",
     "2026-08-17",
     "2026-08-18",
     "2026-08-19",
@@ -22,20 +25,22 @@
   "sweep_sample_size": 450,
   "sweep_sample_seed": 20260909,
   "rtds_covered_days": [
+    "2026-08-15",
+    "2026-08-16",
     "2026-08-17",
     "2026-08-18",
     "2026-08-19",
     "2026-08-20"
   ],
   "chosen_detail_markets": [
-    "15776570882404859424313244238573396911077041802750243946782855653173937875343",
-    "70424907580672134586437106125119494690153481872063944073089703406583256252767",
-    "72680955663947738893308177206474130917418889217241491307809003352666548088063",
-    "87413661050534537532389506150112854158374933360046214314769850475898638845306"
+    "106134185362849037061125018623007323552722013937654577517382742719145041051018",
+    "111433253397055117298683877763777723380342488561515237397494431990357560555623",
+    "44686963774928637050095352572825440935580210932759751124424145547135297655256",
+    "72680955663947738893308177206474130917418889217241491307809003352666548088063"
   ],
   "run_dirs": {
-    "headline": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T02-21-24__4e2601",
-    "sweeps": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T02-25-22__3fe78a",
-    "detail": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T02-30-01__7fa86f"
+    "headline": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T03-47-59__4e2601",
+    "sweeps": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T03-54-19__3fe78a",
+    "detail": "C:\\Users\\kaima\\Github2\\Gambling104\\backtesting_5m\\investigations\\2026-09-09-normal-qq-eval\\runs\\2026-09-09T03-58-41__7e8c7d"
   }
 }
