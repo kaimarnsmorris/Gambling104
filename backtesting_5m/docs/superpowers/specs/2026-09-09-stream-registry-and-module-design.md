@@ -222,7 +222,7 @@ result = backtest(
     quote   = QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50, shares=10),
     execn   = ExecConfig(),
     sample  = Sample(days=(...), require=("spot", "chainlink")),
-    output  = Output(seeds=(0, 1, 2), emit_ticks=True, plots=True),
+    output  = Output(seeds=(0, 1, 2), emit_ticks=True),
 )
 ```
 

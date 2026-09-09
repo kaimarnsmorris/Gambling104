@@ -1,4 +1,4 @@
-"""Scoring, and the four gates that decide whether to believe it.
+"""Scoring, and three of the four gates that decide whether to believe it.
 
 Day-blocked, not market-blocked. Markets inside a day share a regime, a book
 and a competitor set, so resampling markets independently understates the
@@ -8,6 +8,14 @@ answers 'would another fortnight have shown this?'.
 The gates come from the architecture doc's section 4, which observes that they
 exist in the programme and are applied inconsistently. Here they run on every
 result whether anyone remembers to ask or not.
+
+`run_gates` returns three: sign_survives_periods, ci_excludes_zero and
+delete_top_10. The fourth gate of that discipline -- PERIOD-BLOCKED REFITS,
+never a single global fit -- is deliberately absent, and is not the count
+quietly dropping to three. It is a property of how `s` was fitted, and this
+harness imports `s` already computed rather than fitting it, so nothing here
+can observe whether the fit was period-blocked. It belongs to whatever
+produced the fair export; a run cannot certify it and must not appear to.
 """
 import numpy as np
 import pandas as pd
