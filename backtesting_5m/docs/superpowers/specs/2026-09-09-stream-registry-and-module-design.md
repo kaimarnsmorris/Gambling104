@@ -244,6 +244,46 @@ count that looks lower than expected.
 
 ---
 
+## 4b. Repository layout and how `harness` is imported
+
+Research lives at the **repository root**, not inside the module:
+
+```
+Gambling104/
+  backtesting_5m/
+    pyproject.toml        installs the `harness` package
+    harness/              THE MODULE
+    data/                 the module's build outputs
+    docs/
+  models/                 shared block sets (fair/vol/f/link), referenced by name
+  investigations/         ALL research lives here
+    2026-09-09_normal_qq_basic/          (owned by another session)
+    2026-9-9_business_clock_t_dist/      (owned by another session)
+    2026-09-09-normal-qq-eval/           (moved here from backtesting_5m/)
+    ...
+```
+
+**`harness` becomes a properly installed package.** `pip install -e backtesting_5m`
+puts `import harness` on the path, so a `run.py` anywhere — including
+`../investigations` — imports it directly.
+
+This replaces the `sys.path.insert(0, os.path.join(HERE, os.pardir, os.pardir))`
+line every runner currently carries. That line is depth-dependent: it resolves
+correctly from `backtesting_5m/investigations/x/` and silently resolves to the
+wrong directory from `investigations/x/`. Worse, when a runner is executed from
+the wrong place the block resolver does not error — it falls back to
+`harness/blocks/defaults/` and **quietly evaluates a different model**. That
+happened once already today. An installed package removes the failure mode
+rather than documenting it.
+
+`models/` sits beside `investigations/` because a model is research code, not
+harness code, and both sessions need to reach it without importing through the
+module.
+
+**Migration:** move this module's investigation folders to `../investigations/`
+as part of the cleanup. The two folders owned by the concurrent session stay
+exactly where they are and are not touched.
+
 ## 5. Cleanup
 
 **In scope:**
