@@ -209,3 +209,123 @@ def test_the_frozen_blocks_travel_with_the_run(tmp_path, episodes):
     result = _run(tmp_path, episodes)
     frozen = os.path.join(result["run_dir"], "blocks")
     assert sorted(os.listdir(frozen)) == sorted(f"{s}.py" for s in SLOTS)
+
+
+# -- the daily rebate minimum, from the ledger through to the headline ------
+
+@pytest.fixture
+def maker_episodes(flat_episode):
+    """Six markets that fill ONLY on the maker side, on three days.
+
+    The pair rests at 0.50 against a 0.49/0.51 book; from index 1000 the ask
+    steps down to 0.50 and lifts the resting bid, which is a maker fill at
+    0.50 and a $0.035 rebate on ten shares. m5's book never comes to us, so
+    it has no fills at all and its market row must survive untouched. Every
+    day earns $0.07 per seed, far under the $1.00 floor, so the whole rebate
+    is dust and the withheld amount is known by construction.
+    """
+    from dataclasses import replace
+
+    n = len(flat_episode.bid)
+    out = []
+    for k in range(6):
+        ask = np.full(n, 0.51)
+        if k < 5:
+            ask[1000:] = 0.50
+        out.append(replace(flat_episode, market_id=f"m{k}",
+                           open_ts=1786665600 + 300 * k,
+                           day=f"2026-08-{14 + k % 3:02d}",
+                           bid=np.full(n, 0.49), ask=ask,
+                           mid=np.full(n, 0.50)))
+    return out
+
+
+def _fees_by_market(ledger):
+    return ledger.groupby(["market_id", "seed"])["fee_usd"].sum()
+
+
+def test_the_daily_minimum_reaches_markets_and_the_headline(tmp_path,
+                                                            maker_episodes):
+    """The flag adjusted the ledger and nothing else.
+
+    `markets` is built inside the seed loop, so it kept the rebate the ledger
+    had just given up: ledger.parquet and markets.parquet disagreed by the
+    withheld dust, and the headline and gates -- computed from `markets` --
+    reported the unadjusted number under a caveat saying the minimum had been
+    applied.
+    """
+    off = _run(tmp_path, maker_episodes, execn=ExecConfig())
+    on = _run(tmp_path, maker_episodes,
+              execn=ExecConfig(apply_daily_minimum=True))
+
+    withheld = -_fees_by_market(off["ledger"])
+    assert (withheld > 0).all(), "nothing was withheld, so nothing is proven"
+
+    assert (on["ledger"]["fee_usd"] == 0.0).all(), "dust days are not paid"
+
+    idx = ["market_id", "seed"]
+    a = off["markets"].set_index(idx).sort_index()
+    b = on["markets"].set_index(idx).sort_index()
+    moved = withheld.reindex(b.index).fillna(0.0)
+
+    assert b["fees"].values == pytest.approx((a["fees"] + moved).values)
+    assert b["pnl_net"].values == pytest.approx((a["pnl_net"] - moved).values)
+    assert b["pnl_gross"].values == pytest.approx(a["pnl_gross"].values), (
+        "withholding a rebate is a fee change, not a change to gross PnL")
+
+    # and the headline, taken from `markets`, moves with it
+    seed0 = moved.xs(0, level="seed").sum()
+    assert on["summary"]["headline"]["pnl_total"] == pytest.approx(
+        off["summary"]["headline"]["pnl_total"] - seed0)
+    assert on["summary"]["caveats"]["daily_rebate_minimum_applied"] is True
+
+
+def test_the_daily_minimum_leaves_a_market_with_no_maker_fills_alone(
+        tmp_path, maker_episodes):
+    on = _run(tmp_path, maker_episodes,
+              execn=ExecConfig(apply_daily_minimum=True))
+    quiet = on["markets"][on["markets"]["market_id"] == "m5"]
+    assert len(quiet) and (quiet["n_fills"] == 0).all()
+    assert (quiet["fees"] == 0.0).all()
+    assert quiet["pnl_net"].values == pytest.approx(quiet["pnl_gross"].values)
+
+
+def test_the_daily_minimum_off_still_books_every_rebate(tmp_path,
+                                                        maker_episodes):
+    """The flag OFF must leave the artefacts exactly as they were.
+
+    Pinned against numbers known by construction: ten shares at 0.50 earn
+    0.07 * 0.25 * 10 * 0.20 = $0.035, which a run with the flag off books in
+    full -- in the ledger AND in the market row.
+    """
+    off = _run(tmp_path, maker_episodes, execn=ExecConfig())
+    filled = off["markets"][off["markets"]["n_fills"] > 0]
+
+    assert len(filled) == 5
+    assert filled["fees"].values == pytest.approx(-0.035)
+    assert filled["pnl_net"].values == pytest.approx(
+        filled["pnl_gross"].values + 0.035)
+    assert _fees_by_market(off["ledger"]).values == pytest.approx(-0.035)
+    assert off["summary"]["caveats"]["daily_rebate_minimum_applied"] is False
+
+
+def test_per_seed_agrees_with_the_headline_under_the_daily_minimum(
+        tmp_path, maker_episodes):
+    """per_seed is appended inside the seed loop, before the adjustment.
+
+    Left there it reports the unadjusted rebate while the headline reports the
+    adjusted one, so a run disagrees with itself in one summary.json.
+    """
+    from harness.core import stats
+
+    on = _run(tmp_path, maker_episodes, output=Output(seeds=(0, 1)),
+              execn=ExecConfig(apply_daily_minimum=True))
+    per_seed = on["summary"]["per_seed"]
+
+    assert [row["seed"] for row in per_seed] == [0, 1]
+    assert per_seed[0]["pnl_total"] == pytest.approx(
+        on["summary"]["headline"]["pnl_total"])
+    for row in per_seed:
+        frame = on["markets"][on["markets"]["seed"] == row["seed"]]
+        assert row["pnl_total"] == pytest.approx(
+            stats.headline(frame)["pnl_total"])

@@ -143,6 +143,56 @@ def select_episodes(episodes, sample):
     return out, dropped
 
 
+def _seed_frame(markets, seed):
+    """The market rows for one seed.
+
+    An empty `selected` (every episode dropped by `sample`) leaves `markets`
+    with no columns at all, so indexing by "seed" would raise KeyError rather
+    than yield the empty frame the summary already knows how to score.
+    """
+    if "seed" not in markets.columns:
+        return markets
+    return markets[markets["seed"] == seed]
+
+
+def _withhold_daily_minimum(fees_module, ledger, markets):
+    """Apply the daily rebate floor to the ledger AND to the market rows.
+
+    `markets` is accumulated inside the seed loop out of each episode's own
+    `fees_paid`, so it is already final by the time the ledger is adjusted.
+    Adjusting only the ledger left ledger.parquet and markets.parquet
+    disagreeing by exactly the withheld dust, and left the headline and the
+    gates -- both computed from `markets` -- reporting the UNADJUSTED number
+    under a caveat stating that the minimum had been applied.
+
+    `loop.run_episode` defines pnl_net = pnl_gross - fees, so fees enter
+    linearly and the correction is exact: the per-(market_id, seed) change in
+    charged fees is added to `fees` and subtracted from `pnl_net`. `pnl_gross`
+    does not move -- withholding a rebate is a fee change, not a change to PnL
+    before fees. Markets with no fills never appear in the ledger, so their
+    delta is zero and their rows stand exactly as the loop scored them.
+    """
+    adjusted = fees_module.apply_daily_minimum(ledger)
+    if not len(ledger) or not len(markets):
+        return adjusted, markets
+
+    keys = [k for k in ("market_id", "seed")
+            if k in ledger.columns and k in markets.columns]
+    if not keys:
+        return adjusted, markets
+
+    delta = (adjusted.groupby(keys)["fee_usd"].sum()
+             .subtract(ledger.groupby(keys)["fee_usd"].sum(), fill_value=0.0))
+    idx = (pd.MultiIndex.from_frame(markets[keys]) if len(keys) > 1
+           else pd.Index(markets[keys[0]]))
+    moved = delta.reindex(idx).fillna(0.0).to_numpy()
+
+    markets = markets.copy()
+    markets["fees"] = markets["fees"] + moved
+    markets["pnl_net"] = markets["pnl_net"] - moved
+    return adjusted, markets
+
+
 def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
         model_dir=None, streams=()):
     """Replay one configuration. `inputs` is the data files this run read.
@@ -189,7 +239,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
     selected, dropped = select_episodes(episodes, sample)
     tick_ids = set(output.tick_markets)
 
-    all_fills, all_markets, all_ticks, per_seed = [], [], [], []
+    all_fills, all_markets, all_ticks = [], [], []
 
     for seed in output.seeds:
         rows = []
@@ -205,21 +255,23 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
             all_ticks.extend(res.pop("ticks"))
             rows.append({**res, "seed": seed})
 
-        frame = pd.DataFrame(rows)
-        all_markets.append(frame)
-        per_seed.append({"seed": seed, **stats.headline(frame)})
+        all_markets.append(pd.DataFrame(rows))
 
     markets = pd.concat(all_markets, ignore_index=True)
     ledger = pd.DataFrame(all_fills)
     if execn.apply_daily_minimum:
-        ledger = modules["fees"].apply_daily_minimum(ledger)
+        ledger, markets = _withhold_daily_minimum(
+            modules["fees"], ledger, markets)
 
-    # An empty `selected` (every episode dropped by `sample`) leaves each
-    # per-seed frame with no columns at all, so indexing by "seed" would
-    # raise KeyError rather than yielding the empty frame the rest of this
-    # function already knows how to summarise.
-    primary = (markets[markets["seed"] == output.seeds[0]]
-              if "seed" in markets.columns else markets)
+    # `per_seed` is built HERE, off the same corrected frame the headline is
+    # taken from, rather than appended inside the seed loop -- which ran
+    # before the ledger adjustment existed. Patching those dicts afterwards
+    # would mean re-deriving pnl_per_market and c_per_share in a second copy
+    # of stats.headline's arithmetic; recomputing leaves per_seed and headline
+    # agreeing by construction.
+    per_seed = [{"seed": seed, **stats.headline(_seed_frame(markets, seed))}
+                for seed in output.seeds]
+    primary = _seed_frame(markets, output.seeds[0])
     summary = {
         "headline": stats.headline(primary),
         "per_seed": per_seed,
