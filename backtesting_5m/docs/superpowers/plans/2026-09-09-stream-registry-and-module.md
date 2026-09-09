@@ -185,7 +185,7 @@ Claude-Session: https://claude.ai/code/session_01ED1yvqexsuevgcrrK16ymZ"
 - Consumes: `harness.io.read_parquet`.
 - Produces:
   - `TimeKind` (`RECEIPT`, `SOURCE_STAMP`)
-  - `Stream(name, time_col="recv_ns", time_kind=None, time_unit="ns", causal=None, max_age_ms=None, transport_offset_ms=None)`
+  - `Stream(name, time_col="recv_ns", time_kind=None, time_unit="ns", causal=None, max_age_ms=None, transport_offset_ms=None, pre_gridded=False)`
   - `RESERVED = ("recv_ns", "src_ns", "venue", "seq")`, `META_PREFIX = "stream."`
   - `write_stream(df, root, *, name, asset, causal, recorder, date_col=None) -> list[str]`
   - `validate_stream(path) -> dict` — returns parsed metadata, raises `StreamInvalid` otherwise
