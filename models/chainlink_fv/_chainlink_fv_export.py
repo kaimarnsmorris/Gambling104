@@ -106,9 +106,9 @@ def _by_market(name: str) -> dict:
             _table(name).group_by("market_id", maintain_order=True)}
 
 
-def columns_for(market_id: str):
+def columns_for(market_id: str, name: str | None = None):
     """See `_columns_for`; this resolves the variant so the cache key carries it."""
-    return _columns_for(variant(), market_id)
+    return _columns_for(name or variant(), market_id)
 
 
 @functools.lru_cache(maxsize=8192)

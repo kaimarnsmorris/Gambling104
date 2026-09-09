@@ -39,6 +39,11 @@ from harness.build.episodes import load_episodes
 from harness.streams import catalog
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+#: Quoting parameters, set 2026-09-09. e_p is the half-spread in probability;
+#: rpl_p is the retreat per lot, which the first run showed was far too weak --
+#: position sat pinned at max_pos for most of every market.
+E_P, RPL_P, MAX_POS = 0.04, 0.0035, 100.0
 MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "chainlink_fv")
 
 #: The selection window. 2026-09-01 onward is unpriceable -- the model's perp and
@@ -48,12 +53,23 @@ SELECTION_DAYS = tuple("2026-08-%02d" % d for d in range(14, 26))
 
 
 def one(variant: str, episodes, seeds):
-    """One variant. `FV_VARIANT` is what the model's blocks read to find its export."""
+    """One variant.
+
+    The variant goes in as a SIGNAL PARAM, not just an environment variable. The
+    harness caches `s`/`sigma` on the content of `fair.py`/`vol.py` plus
+    `signal_params`, and every variant of this model shares byte-identical block
+    files -- so an environment variable puts nothing in that key and the second
+    variant in this loop would be handed the first one's arrays. `FV_VARIANT` is
+    still set, because the blocks fall back to it and `link.py` reads the family
+    and temperature from the same place.
+    """
     os.environ["FV_VARIANT"] = variant
     return backtest(
+        signal_params={"fair": {"variant": variant},
+                       "vol": {"variant": variant}},
         investigation_dir=HERE,
         model=MODEL,
-        quote=QuoteParams(e_p=0.01, rpl_p=0.0005, max_pos=50.0, shares=10.0),
+        quote=QuoteParams(e_p=E_P, rpl_p=RPL_P, max_pos=MAX_POS, shares=10.0),
         execn=ExecConfig(),
         sample=Sample(),
         output=Output(seeds=seeds),

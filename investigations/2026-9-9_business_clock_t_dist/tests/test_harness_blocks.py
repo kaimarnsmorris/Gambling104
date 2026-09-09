@@ -216,3 +216,44 @@ def test_link_is_untouched_at_temperature_one(monkeypatch, tmp_path):
     link = _load("link").link
     for z in (-2.0, 0.0, 2.0):
         assert link(z) == pytest.approx(float(stats.t.cdf(z, df=NU0)), abs=1e-12)
+
+
+@pytest.mark.slow
+def test_two_variants_in_one_process_do_not_share_a_signal(tmp_path, monkeypatch):
+    """The harness caches `s`/`sigma` on the CONTENT of fair.py and vol.py plus
+    `signal_params`. Every variant of this model shares byte-identical block files
+    -- only the export differs -- so selecting the variant through an environment
+    variable puts nothing in that key, and the second variant in a process is served
+    the first one's arrays. Silently, and reported as its result.
+
+    That is the exact failure the harness's own signals docstring says it exists to
+    prevent, so the variant must travel as a signal param."""
+    from harness.core.signals import block_signature, precompute_signals
+    from harness.core import provenance
+
+    # the 16 variant exports live where the calibration runner wrote them, not in
+    # the harness's own fair dir, which holds baseline alone
+    monkeypatch.setenv("FV_FAIR_DIR",
+                       str(pathlib.Path(__file__).resolve().parents[1] /
+                           "runs" / "select"))
+
+    resolved = provenance.resolve_slots("no_such_investigation", model_dir=MODEL_DIR)
+    modules = {s: provenance.load_slot(resolved[s], s) for s in ("fair", "vol")}
+    sig = block_signature(resolved)
+
+    import polars as pl
+    from harness_paths import FAIR_DIR
+    mid = pl.read_parquet(FAIR_DIR / "baseline.parquet",
+                          columns=["market_id"])["market_id"][0]
+    ep = FakeEpisode(mid)
+
+    cache = {}
+    a = precompute_signals([ep], modules, sig, cache=cache,
+                           signal_params={"fair": {"variant": "baseline"},
+                                          "vol": {"variant": "baseline"}})
+    b = precompute_signals([ep], modules, sig, cache=cache,
+                           signal_params={"fair": {"variant": "rho_off"},
+                                          "vol": {"variant": "rho_off"}})
+    sa, sb = a[ep.market_id][1], b[ep.market_id][1]      # the sigma arrays
+    assert not np.allclose(sa[np.isfinite(sa)], sb[np.isfinite(sb)]), (
+        "rho_off was served baseline's sigma -- the variant is not in the cache key")
