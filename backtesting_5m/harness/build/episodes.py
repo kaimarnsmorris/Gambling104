@@ -148,13 +148,21 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
 
     THE BOUNDARY. `has_warmup` is set per episode by comparing the region's
     start against the earliest market the spot panel carries (or, with no
-    spot, the earliest market in this panel read). The first few markets of
-    the sample get `has_warmup=False` and full-length NaN arrays -- never a
-    short array and never a padded one. Everything later gets True, including
-    episodes whose `warmup_chainlink` is all NaN because the oracle capture
-    had already ended; that is a feed outage, and a block that cannot tell
-    the two apart would treat the start of the sample as an outage and the
-    end of the oracle as history.
+    spot, the earliest market in this panel read, taken before the day
+    filter). It says the region is COMPLETE. Episodes at the start of the
+    sample get False -- and may still carry part of a region, where it
+    straddles the first market -- but never a short array and never a padded
+    one. Everything later gets True, including episodes whose
+    `warmup_chainlink` is all NaN because the oracle capture had already
+    ended; that is a feed outage, and a block that cannot tell the two apart
+    would treat the start of the sample as an outage and the end of the
+    oracle as history.
+
+    Measured on 2026-08-17..18 off `paths.SPOT_ORACLE_WINDOW`: 508 of 562
+    episodes get a complete region. Of the 54 that do not, 51 are markets
+    that open before the venue capture starts at 04:19 UTC on 08-17 and have
+    no spot of their own either; the remaining 3 are the first three markets
+    after it.
     """
     panel_path = panel_path or paths.PANEL
     strikes_path = strikes_path or paths.STRIKES
@@ -171,6 +179,9 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
                                   "bid", "ask", "mid", "n_src"])
     panel["day"] = pd.to_datetime(panel["open_ts"], unit="s").dt.strftime(
         "%Y-%m-%d")
+    # Taken BEFORE the day filter, so a run restricted to one day does not
+    # decide that its first three markets have no history.
+    panel_start = int(panel["open_ts"].min()) if len(panel) else None
     if days:
         panel = panel[panel["day"].isin(set(days))]
 
@@ -204,10 +215,8 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
     # to prior data that happens to be missing.
     if spot is not None and len(spot):
         history_start = int(spot["open_ts"].min())
-    elif len(panel):
-        history_start = int(panel["open_ts"].min())
     else:
-        history_start = None
+        history_start = panel_start
 
     strike_by_id = dict(zip(strikes["market_id"], strikes["strike"]))
 

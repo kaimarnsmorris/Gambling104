@@ -58,6 +58,42 @@ Rebuilt and re-measured on the six-day panel against the same oracle
 
 2026-08-20 alone lands at +5.66, reproducing the bench number above.
 
+THE ORACLE WINDOW, and why there is a second panel. The three feeds do not
+span the same days: the book panel runs 2026-08-14..09-08, stream_venue_l1
+2026-08-17..09-09, and the Chainlink RTDS capture 2026-08-14..08-21 01:59.
+The six-day panel above (08-19..24) therefore has an oracle line on only
+~2.1 of its days, and a fair block that learns its basis from the oracle
+returns NaN without one -- so a six-day headline was in truth a two-day one.
+`paths.SPOT_ORACLE_WINDOW` is this same build over 2026-08-17..08-21, the
+three-way overlap: 3,991,592 rows, 1,339 markets, 99.37 % bucket coverage,
+of which 3,281,366 buckets (3.90 days) can be scored against the oracle
+rather than 1,759,022 (2.08 days).
+
+    raw  spot_usdt - px : mean +50.64  median +54.39  sd 16.10
+    corr spot      - px : mean  +3.42  median  +2.98  sd  6.17
+
+    by day   08-17  +2.14 (sd 3.53)   08-18  +2.21 (sd 3.17)
+             08-19  +3.29 (sd 7.56)   08-20  +5.65 (sd 7.07)
+             08-21  +4.74 (sd 12.37, only its first ~2 h are covered)
+
+The three shared days reproduce the six-day panel's day-means to the cent,
+which is the check that this is the same build over a different window and
+not a different build. The two new days are quieter than the old ones -- the
+USDT premium was both smaller and steadier on 08-17 and 08-18 -- so the
+pooled residual improves to +3.42 from +4.49. That is a property of those
+days, not of the code.
+
+2026-08-18 IS RECOVERABLE, and this build now recovers it. It previously
+failed with `SchemaError: extra column in file outside of expected schema:
+okx_bid`: 12,961 of that day's 13,438 files carry the okx and bybit blocks
+and 477 do not (2026-08-17 has neither block on any file), and polars takes
+the first file it globs as the schema for the whole scan. Every column this
+build asks for is present in every file, so the inconsistency is in the
+source archive's shape and not in what is being requested. `harness.io`
+retries such a directory ignoring extra columns, and failing that by schema
+group; the day comes back with 867,283 usable rows and 275 markets at
+99.46 % bucket coverage. See harness/io.py.
+
 THE CLOCK GATE. stream_venue_l1 is recorded on a different host from the
 panel's reference vantage, with an independent and drifting offset. That
 offset CANNOT be measured from these two streams: the panel's recv_ms records

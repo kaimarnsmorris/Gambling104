@@ -106,6 +106,16 @@ def _wide_spot(n=6, t0=1786665600):
     return pd.DataFrame(rows)
 
 
+def _wide_paths_at(tmp_path, t0, n=6):
+    panel_p = tmp_path / "p.parquet"
+    strikes_p = tmp_path / "s.parquet"
+    spot_p = tmp_path / "sp.parquet"
+    _wide_panel(n, t0).to_parquet(panel_p)
+    _wide_strikes(n, t0).to_parquet(strikes_p)
+    _wide_spot(n, t0).to_parquet(spot_p)
+    return str(panel_p), str(strikes_p), str(spot_p)
+
+
 def _wide_paths(tmp_path, n=6):
     panel_p = tmp_path / "p.parquet"
     strikes_p = tmp_path / "s.parquet"
@@ -217,3 +227,45 @@ def test_a_shorter_warm_up_is_honoured(tmp_path):
         warmup=True, warmup_s=300.0)}["m4"]
     assert ep.warmup_n == 3000 and ep.warmup_s == pytest.approx(300.0)
     assert ep.warmup_spot[10] == pytest.approx(100_000.0 + 300 * 3 + 0)
+
+
+def test_a_day_filter_does_not_make_the_days_first_markets_look_early(
+        tmp_path):
+    """The other half of "warm-up ignores the day filter".
+
+    Six markets straddling midnight, and only the later day selected. Its
+    first selected market has three markets of real history behind it, so
+    `has_warmup` must be True -- a `has_warmup` computed off the FILTERED
+    panel would call it the start of the sample and hand a block a cold
+    start on every day boundary in the run.
+    """
+    t0 = 1786752000 - 900          # 2026-08-14 23:45 UTC
+    panel_p, strikes_p, spot_p = _wide_paths_at(tmp_path, t0)
+    eps = load_episodes(panel_path=panel_p, strikes_path=strikes_p,
+                        spot_path=spot_p, days=["2026-08-15"],
+                        warmup=True, warmup_s=900.0)
+    assert [e.market_id for e in eps] == ["m3", "m4", "m5"]
+    assert eps[0].has_warmup is True
+    assert np.isfinite(eps[0].warmup_spot).sum() > 8000
+
+
+def test_an_incomplete_region_is_flagged_false_but_still_carried(tmp_path):
+    """`has_warmup` says COMPLETE, not NON-EMPTY.
+
+    m2 has two prior markets behind it and needs three, so its region
+    straddles the start of the sample: the flag is False and the data that
+    does exist is still there. Throwing it away would be worse -- a block may
+    perfectly reasonably use a short history if it knows it is short -- and
+    calling it True would let a block trust a region a third of which never
+    existed.
+    """
+    panel_p, strikes_p, spot_p = _wide_paths(tmp_path)
+    ep = {e.market_id: e for e in load_episodes(
+        panel_path=panel_p, strikes_path=strikes_p, spot_path=spot_p,
+        warmup=True, warmup_s=900.0)}["m2"]
+    assert ep.has_warmup is False
+    finite = int(np.isfinite(ep.warmup_spot).sum())
+    assert 5000 < finite < 9000, finite
+    # and what IS there is the tail of the region, nearest the open
+    assert not np.isfinite(ep.warmup_spot[:2900]).any()
+    assert np.isfinite(ep.warmup_spot[-1])

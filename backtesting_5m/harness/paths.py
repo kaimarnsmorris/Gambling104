@@ -21,6 +21,30 @@ RESULTS = os.path.join(DATA, "results")
 SPOT = os.path.join(DATA, "spot_5m_100ms_usd.parquet")
 SPOT_USD = SPOT                      # explicit alias; same file
 
+#: The spot panel rebuilt over the ORACLE OVERLAP, 2026-08-17..08-21. Same
+#: build, same USD basis correction, same columns as `SPOT`; only the window
+#: differs. It exists because the three feeds this harness needs do not span
+#: the same days:
+#:
+#:     book panel   2026-08-14 -> 09-08
+#:     venue L1     2026-08-17 -> 09-09
+#:     RTDS oracle  2026-08-14 -> 08-21 01:59
+#:     ------------------------------------
+#:     overlap      2026-08-17 -> 08-21 01:59
+#:
+#: `SPOT` covers 2026-08-19..24, of which only ~2.1 days have an oracle line,
+#: and a basis-learning fair block returns NaN without one -- so a six-day
+#: headline had collapsed to a two-day one. This window carries 3.90 days of
+#: oracle-covered spot against that 2.08: 3,281,366 buckets against
+#: 1,759,022, a factor of 1.87.
+#:
+#: Two partial days at the ends, both from the source captures and not from
+#: this build: `stream_venue_l1` does not start until 2026-08-17 04:19 UTC
+#: (236 markets that day, not 288), and the oracle stops at 2026-08-21 01:59,
+#: so 08-21's spot is complete but only its first ~2 h can be scored against
+#: Chainlink.
+SPOT_ORACLE_WINDOW = os.path.join(DATA, "spot_5m_100ms_usd_0817_0821.parquet")
+
 #: The superseded BTC/USDT panel. Kept only so a historical run folder can
 #: be reproduced against the data it actually used. Do not build on it.
 SPOT_LEGACY_USDT = os.path.join(DATA, "spot_5m_100ms.parquet")

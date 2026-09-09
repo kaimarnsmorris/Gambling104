@@ -57,12 +57,18 @@ Three properties hold, and the tests enforce all three:
   * The trading loop never indexes warm-up. It exists for `precompute`.
 
 `has_warmup` is a boundary flag, not a data-quality flag. It is True when the
-warm-up region lies inside the extent of the sample the loader read, and
-False for the first markets, which have no prior data at all. So a block can
-tell "there is no warm-up here" (`has_warmup` False) from "there is a warm-up
-region and this feed was down through it" (`has_warmup` True, the array all
-NaN) -- the second is the normal state of `warmup_chainlink` outside the
-oracle capture's window, and the two call for different behaviour.
+WHOLE warm-up region lies inside the extent of the sample the loader read,
+and False at the start of the sample, where part or all of the region falls
+before any data exists. A False episode may still carry some observations --
+the region can straddle the start -- so the flag says "this history is
+complete", not "this history is empty".
+
+That is what separates the two ways an array can be NaN. `has_warmup` False
+means the sample does not reach back this far. `has_warmup` True with an
+all-NaN array means the region is real and THAT FEED was down through it,
+which is the normal state of `warmup_chainlink` past the end of the oracle
+capture. A block that conflates them reads the start of the sample as an
+outage and the end of the oracle as history.
 """
 from dataclasses import dataclass, field
 
@@ -157,9 +163,10 @@ class Episode:
     #:
     #: Length is `warmup_n`, which is 0 when no warm-up was requested. When
     #: warm-up WAS requested the arrays are always full length: an episode
-    #: too early in the sample to have any prior data gets NaN, never a
-    #: truncated or padded array. `has_warmup` is what separates that case
-    #: from a feed outage -- see the module docstring.
+    #: too early in the sample to have prior data gets NaN, never a truncated
+    #: or padded array. `has_warmup` says whether the region is COMPLETE, and
+    #: is what separates the start of the sample from a feed outage -- see
+    #: the module docstring.
     warmup_s: float = 0.0
     has_warmup: bool = False
     warmup_spot: np.ndarray = field(default_factory=_empty)
@@ -280,9 +287,10 @@ def build_episode(market_id, open_ts, day, strike, settle,
     the right length, which is the correct answer for an episode whose feeds
     were down before the open.
 
-    `has_warmup` is the loader's assertion that the region lies inside the
-    sample's extent. This function does not and cannot infer it: an all-NaN
-    warm-up frame looks identical whether the data ran out or the feed did.
+    `has_warmup` is the loader's assertion that the whole region lies inside
+    the sample's extent. This function does not and cannot infer it: an
+    all-NaN warm-up frame looks identical whether the data ran out or the
+    feed did.
     """
     raw_bid, present = _grid(obs, "bid")
     raw_ask, _ = _grid(obs, "ask")
