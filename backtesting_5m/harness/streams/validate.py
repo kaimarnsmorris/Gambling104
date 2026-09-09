@@ -23,6 +23,20 @@ def _first_file(path):
     return path
 
 
+def column_names(path):
+    """The file's column names, or None if the file cannot be read.
+
+    None rather than an exception: `register()` uses this only to run the
+    receipt-map check early, and a path that is missing or not parquet is a
+    different failure, reported where the stream is actually read. A manifest
+    or a declaration check must never be what fails a run first.
+    """
+    try:
+        return tuple(pq.ParquetFile(_first_file(path)).schema_arrow.names)
+    except Exception:                          # noqa: BLE001 - see docstring
+        return None
+
+
 def validate_stream(path):
     """Return the parsed stream metadata, or raise StreamInvalid."""
     f = _first_file(path)
@@ -42,6 +56,7 @@ def validate_stream(path):
     out["causal"] = out["causal"].lower() == "true"
 
     cols = [c for c in pq.ParquetFile(f).schema_arrow.names]
+    out["columns"] = tuple(cols)
     if "recv_ns" not in cols:
         raise StreamInvalid(f"{path}: a stream must carry recv_ns")
     out["values"] = tuple(c for c in cols if c not in RESERVED)

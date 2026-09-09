@@ -15,6 +15,7 @@ from harness.core.episode import DEFAULT_WARMUP_S, build_episode
 from harness.io import read_parquet
 from harness.streams import RESERVED, resolve
 from harness.streams.reader import grid_stream
+from harness.streams.spec import check_receipt_map
 
 # Converts an epoch-second window bound into a registered stream's own time
 # unit. `grid_stream` requires an absolute epoch time column, but that column
@@ -22,6 +23,19 @@ from harness.streams.reader import grid_stream
 # stream's window bounds three orders of magnitude too large and silently
 # select nothing.
 _UNITS_PER_S = {"ns": 1_000_000_000, "us": 1_000_000, "ms": 1_000, "s": 1}
+
+
+def _receipt_cols(reg, value_cols):
+    """Every time column that governs something on this stream, deduped.
+
+    The stream-level one always, plus each per-value receipt actually used --
+    `grid_stream` runs one bucketing per entry here.
+    """
+    cols = {reg.time_col: None}
+    receipt_of = dict(reg.value_time_cols)
+    for col in value_cols:
+        cols.setdefault(receipt_of.get(col, reg.time_col), None)
+    return tuple(cols)
 
 
 def load_chainlink(rtds_path=None):
@@ -245,7 +259,16 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
             # absolute epoch and drop every row. Skip: load_episodes reads
             # these panels by its existing path.
             continue
-        stream_frames[name] = (reg, read_parquet(reg.path))
+        df = read_parquet(reg.path)
+        value_cols = reg.values or tuple(c for c in df.columns
+                                         if c not in RESERVED)
+        # Re-run the registration check against the columns the file actually
+        # has. `register()` runs it too, but only best-effort -- an adapter may
+        # name a path that was unreadable then. This one cannot be skipped, and
+        # it fires before a single bucket is filled.
+        check_receipt_map(name, df.columns, value_cols, reg.time_col,
+                          reg.value_time_cols)
+        stream_frames[name] = (reg, df, value_cols)
 
     episodes = []
     for (market_id, open_ts), obs in panel.groupby(["market_id", "open_ts"],
@@ -294,19 +317,29 @@ def load_episodes(panel_path=None, strikes_path=None, spot_path=None,
 
         if stream_frames:
             window = {}
-            for name, (reg, df) in stream_frames.items():
+            for name, (reg, df, value_cols) in stream_frames.items():
                 # Bounds are converted using the STREAM'S OWN time unit --
                 # not assumed to be nanoseconds -- so a millisecond-stamped
                 # stream does not silently select nothing.
                 to_unit = _UNITS_PER_S[reg.time_unit]
                 lo = int(open_ts) * to_unit
                 hi = (int(open_ts) + paths.H) * to_unit
-                sub = df[(df[reg.time_col] >= lo) & (df[reg.time_col] < hi)]
+                # A row is in the window if ANY governing receipt is, not
+                # only the stream-level one. The receipts in a row disagree
+                # by up to seconds, so slicing on one of them would clip a
+                # column whose own arrival fell inside the window off its
+                # first buckets. Rows the other receipts pull in are dropped
+                # again by the bucketing that does not want them.
+                in_window = None
+                for tcol in _receipt_cols(reg, value_cols):
+                    hit = (df[tcol] >= lo) & (df[tcol] < hi)
+                    in_window = hit if in_window is None else (in_window | hit)
+                sub = df[in_window]
                 window[name] = grid_stream(
-                    sub, int(open_ts), reg.values or
-                    tuple(c for c in sub.columns if c not in RESERVED),
+                    sub, int(open_ts), value_cols,
                     time_col=reg.time_col, time_unit=reg.time_unit,
-                    causal=reg.causal)
+                    causal=reg.causal,
+                    value_time_cols=reg.value_time_cols)
             ep = replace(ep, streams=window)
 
         episodes.append(ep)
