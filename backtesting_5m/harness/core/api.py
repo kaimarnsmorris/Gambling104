@@ -55,7 +55,8 @@ def _fingerprinted_inputs(inputs, streams):
 
 
 def backtest(*, model=None, streams=(), inputs=(), quote, execn, sample,
-             output, episodes, investigation_dir):
+             output, episodes, investigation_dir, signal_cache=None,
+             signal_params=()):
     """Run one backtest and return its artefacts.
 
     `model` names a shared model directory; blocks resolve investigation-first,
@@ -68,11 +69,20 @@ def backtest(*, model=None, streams=(), inputs=(), quote, execn, sample,
     manifest, and the registry-resolved path of every name in `streams` is
     fingerprinted with them, so a run folder can be matched to its data
     afterwards without the caller listing paths twice.
+
+    `signal_cache` is a dict shared across arms of a sweep, holding the `s`
+    and `sigma` arrays that depend on the episode, the fair/vol blocks and
+    `signal_params` alone. That is 61 % of an arm's cost. `signal_params`
+    reaches those two blocks as keyword arguments, so a model parameter can
+    be swept without editing the block per point, and it is part of both the
+    cache key and the config hash. Prefer `grid_search`, which manages the
+    cache for you.
     """
     catalog.install()
     out = run(investigation_dir, quote, execn, sample, output, episodes,
               inputs=_fingerprinted_inputs(inputs, streams),
-              model_dir=model, streams=streams)
+              model_dir=model, streams=streams,
+              signal_cache=signal_cache, signal_params=signal_params)
     return BacktestResult(run_dir=out["run_dir"], summary=out["summary"],
                           ledger=out["ledger"], markets=out["markets"],
                           ticks=out.get("ticks"))

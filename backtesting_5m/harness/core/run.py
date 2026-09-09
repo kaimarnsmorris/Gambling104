@@ -8,6 +8,8 @@ import pandas as pd
 from harness import paths
 from harness.core import provenance, stats
 from harness.core.loop import run_episode
+from harness.core.signals import (block_signature, normalise_params,
+                                  precompute_signals)
 from harness.streams import registry
 
 #: Measured twice on this exact substrate: the 100 ms grid arm earns more than
@@ -79,7 +81,8 @@ def _fee_fields(schedule):
         return {"repr": repr(schedule)}
 
 
-def config_dict(quote, execn, sample, output, fee_schedule, streams=()):
+def config_dict(quote, execn, sample, output, fee_schedule, streams=(),
+                signal_params=()):
     """Everything that makes this run a different run.
 
     The run-folder suffix is a hash of this, so anything omitted here makes two
@@ -91,9 +94,16 @@ def config_dict(quote, execn, sample, output, fee_schedule, streams=()):
 
     `streams` is recorded too, so the manifest shows which named streams a
     run actually used rather than leaving that to be inferred.
+
+    So is `signal_params`. Two arms of a vol-scale sweep differ in NOTHING
+    else -- same quote, same execution, same blocks -- so omitting it here
+    would give them one config hash, one run folder, and the second arm
+    silently overwriting the first. That is the same failure `fill_params`
+    already caused once.
     """
     return {
         "quote": asdict(quote),
+        "signal_params": dict(normalise_params(signal_params)),
         "sample": asdict(sample),
         "output": asdict(output),
         "latency": asdict(execn.latency),
@@ -228,7 +238,8 @@ def _withhold_daily_minimum(fees_module, ledger, markets):
 
 
 def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
-        model_dir=None, streams=()):
+        model_dir=None, streams=(), signal_cache=None,
+        signal_params=()):
     """Replay one configuration. `inputs` is the data files this run read.
 
     Every path in `inputs` is fingerprinted into the manifest, which is how a
@@ -240,6 +251,15 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
     investigation-first, then the model, then harness defaults. `streams` is
     recorded into the config so the manifest shows which named streams this
     run used.
+
+    `signal_cache` is a dict shared across arms of a grid. `s` and `sigma`
+    depend on the episode, the `fair`/`vol` blocks and `signal_params` alone
+    -- not on quote parameters, not on the seed -- and cost 61 % of an arm,
+    so recomputing them per arm is the single largest waste in a sweep.
+    `signal_params` reaches those two blocks as keyword arguments, which is
+    how a grid sweeps a model parameter (vol scale, say) without editing the
+    block per point. Both are recorded in the config. See
+    harness/core/signals.py for what the cache key covers and why it must.
     """
     resolved = provenance.resolve_slots(investigation_dir, model_dir=model_dir)
     modules = {slot: provenance.load_slot(path, slot)
@@ -254,7 +274,8 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
     # ledger charges -- including one that came from an overridden block.
     execn = replace(execn, fees=fee_schedule)
 
-    config = config_dict(quote, execn, sample, output, fee_schedule, streams)
+    config = config_dict(quote, execn, sample, output, fee_schedule, streams,
+                         signal_params)
 
     # Selected BEFORE the run folder is created: a `require` clause that
     # cannot match raises here, and a run that never starts should not leave
@@ -279,12 +300,19 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
 
     all_fills, all_markets, all_ticks = [], [], []
 
+    # ONCE, not once per seed. Every seed replays the same market against the
+    # same signal; only the latency draws differ. Computing these inside the
+    # seed loop -- as this did -- made a 3-seed run do the expensive 61 %
+    # three times over for identical arrays.
+    signals = precompute_signals(
+        selected, modules, block_signature(resolved), signal_cache,
+        signal_params)
+
     for seed in output.seeds:
         rows = []
         for ep in selected:
             eb = dict(blocks)
-            eb["s"] = modules["fair"].precompute(ep)
-            eb["sigma"] = modules["vol"].precompute(ep)
+            eb["s"], eb["sigma"] = signals[ep.market_id]
             emit = output.emit_ticks and (
                 not tick_ids or ep.market_id in tick_ids)
             res = run_episode(ep, eb, quote, execn, seed=seed, emit_ticks=emit)

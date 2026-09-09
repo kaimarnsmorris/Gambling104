@@ -53,7 +53,11 @@ def one(e_z, tick_markets=()):
                           max_pos=50.0, shares=10.0),
         execn=ExecConfig(),
         sample=Sample(require=("spot", "chainlink")),
-        output=Output(seeds=(0, 1, 2), emit_ticks=bool(tick_markets),
+        # ONE seed. A seed changes only the latency draws, so extra seeds
+        # buy a dispersion estimate, not a better estimate -- worth having
+        # on a finalist, wasteful on every arm of a comparison. Re-run the
+        # arm you settle on with seeds=(0, 1, 2) and read the spread there.
+        output=Output(seeds=(0,), emit_ticks=bool(tick_markets),
                       tick_markets=tick_markets),
         episodes=EPISODES,
         inputs=(paths.PANEL, paths.STRIKES, paths.SPOT, paths.RTDS_BTC),
