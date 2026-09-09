@@ -102,7 +102,10 @@ def config_dict(quote, execn, sample, output, fee_schedule):
     }
 
 
-def _select(episodes, sample):
+def select_episodes(episodes, sample):
+    """(kept, dropped_counts). Drop counts are reported in summary.json so a
+    require clause that halves the sample is visible rather than inferred."""
+    dropped = {}
     out = []
     for ep in episodes:
         if sample.t0 is not None and ep.open_ts < sample.t0:
@@ -114,12 +117,30 @@ def _select(episodes, sample):
         if sample.markets and ep.market_id not in sample.markets:
             continue
         if sample.require_spot and not ep.has_spot.any():
+            dropped["spot"] = dropped.get("spot", 0) + 1
+            continue
+        missing = None
+        for name in sample.require:
+            if name == "spot":
+                ok = bool(ep.has_spot.any())
+            else:
+                ok = name in ep.streams and bool(ep.streams[name]["has"].any())
+            if not ok:
+                missing = name
+                break
+        if missing:
+            dropped[missing] = dropped.get(missing, 0) + 1
             continue
         out.append(ep)
+
     out.sort(key=lambda e: e.open_ts)
     if sample.max_markets is not None:
         out = out[: sample.max_markets]
-    return out
+    return out, dropped
+
+
+def _select(episodes, sample):
+    return select_episodes(episodes, sample)[0]
 
 
 def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
@@ -159,7 +180,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
         "fill_params": dict(execn.fill_params),
     }
 
-    selected = _select(episodes, sample)
+    selected, dropped = select_episodes(episodes, sample)
     tick_ids = set(output.tick_markets)
 
     all_fills, all_markets, all_ticks, per_seed = [], [], [], []
@@ -190,6 +211,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
         "headline": stats.headline(primary),
         "per_seed": per_seed,
         "gates": stats.run_gates(primary),
+        "sample": {"n_selected": len(selected), "dropped": dropped},
         "caveats": {
             "grid_bias_usd_per_market": GRID_BIAS_USD_PER_MARKET,
             "grid_bias_note":

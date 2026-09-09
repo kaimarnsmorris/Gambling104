@@ -60,6 +60,11 @@ class Sample:
     markets: tuple = ()
     max_markets: int | None = None
     require_spot: bool = False
+    #: Exclude any market for which a named stream has no usable observation
+    #: in the window. EXCLUDED MEANS ABSENT -- not present-with-NaN, and never
+    #: scored as zero. `require_spot` is the older special case and is kept
+    #: working; prefer require=("spot",).
+    require: tuple = ()
 
 
 @dataclass(frozen=True)
