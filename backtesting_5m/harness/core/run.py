@@ -78,7 +78,7 @@ def _fee_fields(schedule):
         return {"repr": repr(schedule)}
 
 
-def config_dict(quote, execn, sample, output, fee_schedule):
+def config_dict(quote, execn, sample, output, fee_schedule, streams=()):
     """Everything that makes this run a different run.
 
     The run-folder suffix is a hash of this, so anything omitted here makes two
@@ -87,6 +87,9 @@ def config_dict(quote, execn, sample, output, fee_schedule):
     how the `adverse_lag` and `penetration` sweep arms -- differing ONLY in
     fill_params -- shipped run folders with the same suffix and byte-identical
     config blocks. That inverts what the hash is for.
+
+    `streams` is recorded too, so the manifest shows which named streams a
+    run actually used rather than leaving that to be inferred.
     """
     return {
         "quote": asdict(quote),
@@ -99,6 +102,7 @@ def config_dict(quote, execn, sample, output, fee_schedule):
         "max_tte_s": execn.max_tte_s,
         "fill_params": dict(execn.fill_params),
         "fees": _fee_fields(fee_schedule),
+        "streams": list(streams),
     }
 
 
@@ -143,15 +147,21 @@ def _select(episodes, sample):
     return select_episodes(episodes, sample)[0]
 
 
-def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
+def run(investigation_dir, quote, execn, sample, output, episodes, inputs=(),
+        model_dir=None, streams=()):
     """Replay one configuration. `inputs` is the data files this run read.
 
     Every path in `inputs` is fingerprinted into the manifest, which is how a
     run folder answers "which panel, which spot build, which fair export?"
     later. Passing nothing leaves `manifest["inputs"]` empty and the run
     unidentifiable against its data.
+
+    `model_dir` names a shared block directory: slots resolve
+    investigation-first, then the model, then harness defaults. `streams` is
+    recorded into the config so the manifest shows which named streams this
+    run used.
     """
-    resolved = provenance.resolve_slots(investigation_dir)
+    resolved = provenance.resolve_slots(investigation_dir, model_dir=model_dir)
     modules = {slot: provenance.load_slot(path, slot)
                for slot, path in resolved.items()}
 
@@ -164,7 +174,7 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
     # ledger charges -- including one that came from an overridden block.
     execn = replace(execn, fees=fee_schedule)
 
-    config = config_dict(quote, execn, sample, output, fee_schedule)
+    config = config_dict(quote, execn, sample, output, fee_schedule, streams)
 
     run_dir = provenance.new_run_dir(investigation_dir, config)
     provenance.write_manifest(run_dir, config, resolved, inputs=tuple(inputs),
@@ -206,7 +216,12 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
     markets = pd.concat(all_markets, ignore_index=True)
     ledger = pd.DataFrame(all_fills)
 
-    primary = markets[markets["seed"] == output.seeds[0]]
+    # An empty `selected` (every episode dropped by `sample`) leaves each
+    # per-seed frame with no columns at all, so indexing by "seed" would
+    # raise KeyError rather than yielding the empty frame the rest of this
+    # function already knows how to summarise.
+    primary = (markets[markets["seed"] == output.seeds[0]]
+              if "seed" in markets.columns else markets)
     summary = {
         "headline": stats.headline(primary),
         "per_seed": per_seed,
@@ -234,9 +249,8 @@ def run(investigation_dir, quote, execn, sample, output, episodes, inputs=()):
     with open(os.path.join(run_dir, "summary.json"), "w") as fh:
         json.dump(summary, fh, indent=2, default=str)
 
-    if output.plots and len(primary):
-        from harness.core import plots
-        plots.cumulative_pnl(primary, os.path.join(run_dir, "cum_pnl.png"))
-
-    return {"run_dir": run_dir, "summary": summary,
-            "ledger": ledger, "markets": markets}
+    result = {"run_dir": run_dir, "summary": summary,
+              "ledger": ledger, "markets": markets}
+    if all_ticks:
+        result["ticks"] = pd.DataFrame(all_ticks)
+    return result
