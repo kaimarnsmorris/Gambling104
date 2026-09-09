@@ -106,75 +106,34 @@ Consequences for the harness:
 
 ---
 
-## 3. Two asks
+## 3. Both asks are WITHDRAWN
 
-### 3.1 `link` needs a per-tick binding (blocking)
+This section asked for two changes. Neither is needed: the harness had already
+solved both by the time the model was rewritten against it, and the model now fits
+the interface as it stands.
 
-`harness/core/run.py:154` does `"link": modules["link"].link` and
-`harness/core/loop.py:63` calls it as `fair_p = link(z_i)`. Our `link` cannot
-serve that call: the settlement tail `(nu, mu, sigma_t)` is a function of the
-business time left and is therefore **per tick**, exactly the way `f` is already
-bound to `strike` and `sigma[i]`. Within one 5 m episode `sigma_t` moves by more
-than an order of magnitude, so there is no episode-level aggregate to fall back
-on — a median would be wrong on nearly every tick and wrong invisibly. Our
-`link(z)` therefore raises a `TypeError` whose message is this section.
+### 3.1 `link` per-tick binding — withdrawn
 
-We have put the hook on our side already. `link.at(ep, i)` returns a plain
-`link(z) -> p` for one tick, binds lazily, and caches per market; it is attached
-to the `link` *function object* as well as the module, because the blocks dict
-holds the function. **The harness change is one added line**, in `loop.py`'s tick
-loop, right after `sigma_i = float(sigma_arr[i])`:
+The original ask was for `link` to receive a tick index, because the settlement
+tail's `(nu, mu, sigma_t)` vary with business time and `link(z)` is a pure function.
 
-```python
-            link_i = getattr(link, "at", lambda _e, _i: link)(ep, i)
-```
+Resolved on our side instead. The tail is folded into the two channels the harness
+already provides — a location shift on `s` and a scale on `sigma` — against one fixed
+link shape per run. `models/chainlink_fv/tailfold.py` carries the derivation; the
+cost is a median 0.07c and 95th-percentile 0.42c of probability in the quoting band,
+measured on 100k real rows and held by a test.
 
-and then `link_i` in place of `link` in the two calls two lines below — the
-`quotes(...)` argument and `fair_p = link(z_i)`. That is the whole diff:
+`link` is now a one-argument function, exactly as `loop.py` and `quote.py` call it.
 
-* `link_i` is still a plain `link(z) -> p`, so `quote.py` and every other block
-  are untouched and the slot contract is unchanged for everyone else;
-* the `getattr` default means the stock logistic `blocks/defaults/link.py`,
-  which has no `.at`, behaves exactly as it does today;
-* no `bind` call is needed in `run.py` — `at(ep, i)` does its own binding, so
-  the change is confined to one file.
+**If you ever do bind `link` per tick** — for another model, or because it is cheap —
+tell us and the fold goes away: delete `tailfold.py`, hand the tail over whole, and
+the concession with it. Nothing else in the model changes. But do not do it for us.
 
-This was flagged in the design spec (§7.4, "one dependency on the harness team")
-before the harness froze its block API; this document is the concrete version of
-that request.
+### 3.2 `paths.INVESTIGATIONS` — withdrawn
 
-### 3.2 `paths.INVESTIGATIONS` cannot reach this investigation
-
-`harness/paths.py:13` is
-
-```python
-INVESTIGATIONS = os.path.join(PROJECT, "investigations")   # backtesting_5m/investigations
-```
-
-but this investigation lives at the **repository root**,
-`investigations/2026-9-9_business_clock_t_dist`, which is where its four block
-files are. `resolve_slots(investigation_dir)` itself takes an explicit directory
-and so still works if the caller passes an absolute path, but any driver that
-resolves an investigation *by name* under `paths.INVESTIGATIONS` will look in the
-wrong tree and silently fall through to `blocks/defaults` — which for `link` is a
-plain logistic and for `fair` raises. A silent fallback to the default blocks is
-the failure mode worth avoiding here: the run would complete and score a model
-nobody intended.
-
-Suggested fix, harness-side (we have not made it — `backtesting_5m/` is yours):
-either search both trees, or make the constant a tuple, e.g.
-
-```python
-INVESTIGATIONS = (os.path.join(PROJECT, "investigations"),
-                  os.path.join(os.path.dirname(PROJECT), "investigations"))
-```
-
-with by-name resolution taking the first hit and raising if a name matches in
-neither. Note that `FAIR_DIR` has no such problem: the export builder writes to
-`<repo>/backtesting_5m/data/fair`, which is exactly what `harness/paths.py`
-already points at.
-
----
+`backtest(investigation_dir=...)` takes an explicit path, so where the investigation
+folder physically sits never comes up. The model itself lives in
+`models/chainlink_fv/`, alongside `models/normal_qq/`, and is passed as `model=`.
 
 ## 4. What is NOT open
 
