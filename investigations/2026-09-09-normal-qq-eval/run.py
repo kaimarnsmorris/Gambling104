@@ -13,21 +13,22 @@ report, and are not hill-climbed against this 5-day sample.
 """
 import json
 import os
-import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+import numpy as np
 
-import numpy as np  # noqa: E402
-
-from harness.build.episodes import load_episodes          # noqa: E402
-from harness.core.config import ExecConfig, Output, QuoteParams, Sample  # noqa: E402
-from harness.core.latency import LatencyModel             # noqa: E402
-from harness.core.run import run                          # noqa: E402
-from harness.core.sweeps import run_with_sweeps            # noqa: E402
-from harness import paths                                  # noqa: E402
+from harness.build.episodes import load_episodes
+from harness.core.config import ExecConfig, Output, QuoteParams, Sample
+from harness.core.latency import LatencyModel
+from harness.core.run import run
+from harness.core.sweeps import run_with_sweeps
+from harness import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py`/`vol.py`/`f.py`/`link.py` were byte-identical to the canonical
+#: model and have been deleted from this folder; blocks resolve here first,
+#: then in MODEL, then in harness defaults.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 
 #: THE FULL RECORDER WINDOW. `paths.SPOT_LONDON` is the spot panel built from
 #: the London recorder's own 100 ms venue panel rather than from
@@ -110,6 +111,7 @@ def main():
         output=Output(seeds=(0, 1, 2)),
         episodes=episodes,
         inputs=INPUTS,
+        model_dir=MODEL,
     )
     print(f"headline: {time.time()-t1:.1f}s -> {headline['run_dir']}")
     print(headline["summary"]["headline"])
@@ -132,6 +134,7 @@ def main():
         output=Output(seeds=(0,)),
         episodes=sweep_episodes,
         inputs=INPUTS,
+        model_dir=MODEL,
     )
     print(f"sweeps: {time.time()-t2:.1f}s -> {sweep_res['run_dir']}")
     results["sweeps"] = sweep_res
@@ -158,6 +161,7 @@ def main():
                       seeds=(0,)),
         episodes=detail_episodes,
         inputs=INPUTS,
+        model_dir=MODEL,
     )
     print(f"detail (ticks): {time.time()-t3:.1f}s -> {detail_res['run_dir']}")
     results["detail"] = detail_res

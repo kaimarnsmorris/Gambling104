@@ -16,10 +16,8 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-from harness.io import read_parquet                      # noqa: E402
-from harness.blocks.defaults.fees import Liquidity        # noqa: E402
+from harness.io import read_parquet
+from harness.blocks.defaults.fees import Liquidity
 
 
 def split(run_dir, seed=None):

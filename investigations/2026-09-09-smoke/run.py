@@ -1,14 +1,11 @@
 """End-to-end smoke run on one real day. Not a result -- a proof of plumbing."""
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-from harness import paths                              # noqa: E402
-from harness.build.episodes import load_episodes          # noqa: E402
-from harness.core.config import ExecConfig, Output, QuoteParams, Sample  # noqa: E402
-from harness.core.latency import LatencyModel             # noqa: E402
-from harness.core.run import run                          # noqa: E402
+from harness import paths
+from harness.build.episodes import load_episodes
+from harness.core.config import ExecConfig, Output, QuoteParams, Sample
+from harness.core.latency import LatencyModel
+from harness.core.run import run
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 

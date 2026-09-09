@@ -18,18 +18,19 @@ observations at p = 1.000 and settling in the money on only 77 % of them.
 """
 import json
 import os
-import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+import numpy as np
+import pandas as pd
 
-import numpy as np                                          # noqa: E402
-import pandas as pd                                         # noqa: E402
-
-from harness.build.episodes import load_episodes            # noqa: E402
-from harness.core import provenance                         # noqa: E402
-from harness import paths                                   # noqa: E402
+from harness.build.episodes import load_episodes
+from harness.core import provenance
+from harness import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py`/`vol.py`/`f.py`/`link.py` were byte-identical to the canonical
+#: model and have been deleted from this folder; resolve_slots below is
+#: given MODEL so every slot still resolves to the file the run priced with.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 EVAL_INDICES = (300, 900, 1500, 2100, 2700)     # tte 270, 210, 150, 90, 30 s
 SATURATED = 0.999
 OUT_JSON = "calibration_uncond.json"
@@ -46,7 +47,7 @@ def main():
         warmup_s = float(m.get("warmup_s", warmup_s))
 
     mods = {s: provenance.load_slot(p, s)
-            for s, p in provenance.resolve_slots(HERE).items()}
+            for s, p in provenance.resolve_slots(HERE, model_dir=MODEL).items()}
 
     eps = load_episodes(spot_path=spot_path, days=days,
                         rtds_path=paths.RTDS_BTC,

@@ -58,27 +58,29 @@ the filter is printed so the size of the drop is on the record.
 import json
 import os
 import shutil
-import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-import matplotlib                                          # noqa: E402
+import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt                            # noqa: E402
-import numpy as np                                         # noqa: E402
+import matplotlib.pyplot as plt          # noqa: E402
+import numpy as np                        # noqa: E402
 
-from harness.build.episodes import load_episodes           # noqa: E402
-from harness.core import provenance, stats                 # noqa: E402
-from harness.core.config import (ExecConfig, Output,       # noqa: E402
+from harness.build.episodes import load_episodes
+from harness.core import provenance, stats
+from harness.core.config import (ExecConfig, Output,
                                  QuoteParams, Sample)
-from harness.core.latency import LatencyModel              # noqa: E402
-from harness.core.run import run                           # noqa: E402
-from harness import paths                                  # noqa: E402
+from harness.core.latency import LatencyModel
+from harness.core.run import run
+from harness import paths
 
-import calibration                                          # noqa: E402
+import calibration
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py`, `f.py` and `link.py` were byte-identical to the canonical model
+#: and have been deleted from this folder; `materialise` below copies them
+#: from MODEL instead. `vol.py` is a DELIBERATE local shadow -- see the
+#: comment at the top of that file -- and is never sourced from MODEL.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 VARIANT_ROOT = os.path.join(HERE, "runs", "variants")
 
 FIT_DAYS = ("2026-08-17", "2026-08-18")
@@ -117,7 +119,7 @@ def materialise(arm, vol_file):
     out = os.path.join(VARIANT_ROOT, arm)
     os.makedirs(out, exist_ok=True)
     for name in ("fair.py", "f.py", "link.py"):
-        shutil.copy2(os.path.join(HERE, name), os.path.join(out, name))
+        shutil.copy2(os.path.join(MODEL, name), os.path.join(out, name))
     shutil.copy2(os.path.join(HERE, vol_file), os.path.join(out, "vol.py"))
     shutil.copy2(os.path.join(HERE, "sigma_fit.json"),
                  os.path.join(out, "sigma_fit.json"))

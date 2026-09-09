@@ -35,7 +35,6 @@ across 1,992 markets -- and are drawn regardless.
 """
 import json
 import os
-import sys
 
 import matplotlib
 matplotlib.use("Agg")
@@ -43,16 +42,18 @@ import matplotlib.pyplot as plt          # noqa: E402
 import numpy as np                        # noqa: E402
 import pandas as pd                       # noqa: E402
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-from harness.blocks.defaults.fees import Liquidity          # noqa: E402
+from harness.blocks.defaults.fees import Liquidity
 LIQ_MAKER = int(Liquidity.MAKER)
-from harness.io import read_parquet                        # noqa: E402
-from harness.core.provenance import load_slot, resolve_slots  # noqa: E402
-from harness.build.episodes import load_episodes           # noqa: E402
-from harness import paths                                   # noqa: E402
+from harness.io import read_parquet
+from harness.core.provenance import load_slot, resolve_slots
+from harness.build.episodes import load_episodes
+from harness import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py`/`vol.py`/`f.py`/`link.py` were byte-identical to the canonical
+#: model and have been deleted from this folder; resolve_slots below is
+#: given MODEL so `link` still resolves to the same file the run used.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 
 BUY_MARKER = dict(marker="^", color="tab:green", s=28, zorder=5, label="buy")
 SELL_MARKER = dict(marker="v", color="tab:red", s=28, zorder=5, label="sell")
@@ -362,7 +363,7 @@ def plot_calibration(ledger, winner_up_by_market, path, n_buckets=10):
     if not len(l):
         return
 
-    resolved = resolve_slots(HERE)
+    resolved = resolve_slots(HERE, model_dir=MODEL)
     link_mod = load_slot(resolved["link"], "link")
     l["fair_p"] = l["z"].apply(link_mod.link)
 

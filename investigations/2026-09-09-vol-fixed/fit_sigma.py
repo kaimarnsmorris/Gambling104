@@ -48,20 +48,22 @@ import math
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-import matplotlib                                          # noqa: E402
+import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt                            # noqa: E402
-import numpy as np                                         # noqa: E402
-import pandas as pd                                        # noqa: E402
+import matplotlib.pyplot as plt          # noqa: E402
+import numpy as np                        # noqa: E402
+import pandas as pd                       # noqa: E402
 
-from harness.build.episodes import load_episodes           # noqa: E402
-from harness.core import provenance                        # noqa: E402
-from harness.io import read_parquet                        # noqa: E402
-from harness import paths                                  # noqa: E402
+from harness.build.episodes import load_episodes
+from harness.core import provenance
+from harness.io import read_parquet
+from harness import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py`/`f.py`/`link.py` were byte-identical to the canonical model and
+#: have been deleted from this folder; resolve_slots below is given MODEL so
+#: `fair` still resolves to the same file the runners price with.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 CACHE_DIR = os.path.join(HERE, "runs", "cache")
 
 #: WHICH SPOT PANEL, AND WHICH CALENDAR SPLIT. Each entry carries its own
@@ -140,7 +142,7 @@ def observations(days=None, rebuild=False):
     if os.path.exists(obs_parquet) and not rebuild:
         return read_parquet(obs_parquet)
 
-    res = provenance.resolve_slots(HERE)
+    res = provenance.resolve_slots(HERE, model_dir=MODEL)
     fair = provenance.load_slot(res["fair"], "fair")
     base = provenance.load_slot(os.path.join(HERE, "vol_baseline.py"), "vol")
 
@@ -346,7 +348,7 @@ def main():
         "spot_path": spot_path,
         "warmup_s": WARMUP_S,
         "basis_halflife_s": float(
-            provenance.load_slot(provenance.resolve_slots(HERE)["fair"],
+            provenance.load_slot(provenance.resolve_slots(HERE, model_dir=MODEL)["fair"],
                                  "fair").BASIS_HALFLIFE_S),
         "bias_short_tau_fit": bias_fit,
         "bias_short_tau_test": bias_test,

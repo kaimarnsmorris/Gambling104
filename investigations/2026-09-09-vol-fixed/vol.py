@@ -1,3 +1,7 @@
+# DELIBERATE LOCAL SHADOW: this vol.py is NOT models/normal_qq/vol.py. It is
+# the fitted lookup table this investigation exists to evaluate; the
+# investigation-first block resolution order picking it over the model's
+# EWMA baseline is the point, not an oversight. Do not "tidy" it away.
 """sigma -- CALIBRATED. The empirical term structure of the forecast error.
 
 THE CONTROL THIS REPLACES, `vol_baseline.py`, builds sigma_T from an EWMA of

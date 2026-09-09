@@ -34,18 +34,19 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-import matplotlib                                          # noqa: E402
+import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt                            # noqa: E402
-import numpy as np                                         # noqa: E402
+import matplotlib.pyplot as plt          # noqa: E402
+import numpy as np                        # noqa: E402
 
-from harness.build.episodes import load_episodes           # noqa: E402
-from harness.core import provenance                        # noqa: E402
-from harness import paths                                  # noqa: E402
+from harness.build.episodes import load_episodes
+from harness.core import provenance
+from harness import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: `fair.py` was byte-identical to the canonical model and has been deleted
+#: from this folder; loaded from MODEL instead of HERE below.
+MODEL = os.path.join(HERE, os.pardir, os.pardir, "models", "normal_qq")
 WARMUP_S = 900.0
 DEFAULT_DAYS = ("2026-08-19", "2026-08-20")
 PLOT_MARKETS = 8                # consecutive markets drawn in the figure
@@ -71,7 +72,7 @@ def main():
         if arg.startswith("--days"):
             days = tuple(arg.split("=", 1)[1].split(","))
 
-    fair = provenance.load_slot(os.path.join(HERE, "fair.py"), "fair")
+    fair = provenance.load_slot(os.path.join(MODEL, "fair.py"), "fair")
     vol = provenance.load_slot(os.path.join(HERE, "vol_baseline.py"), "vol")
     print(f"fair.BASIS_HALFLIFE_S = {fair.BASIS_HALFLIFE_S} s, "
           f"warm-up = {WARMUP_S} s "

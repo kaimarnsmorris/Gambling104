@@ -13,16 +13,13 @@ Three questions, none of them assumed:
 Prints plain ASCII only; the console here is cp1252.
 """
 import os
-import sys
 
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-
-from harness import paths                                    # noqa: E402
-from harness.build.episodes import load_chainlink            # noqa: E402
-from harness.io import read_parquet                          # noqa: E402
+from harness import paths
+from harness.build.episodes import load_chainlink
+from harness.io import read_parquet
 
 OVERLAP_DAYS = ("2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20",
                 "2026-08-21")

@@ -42,9 +42,6 @@ which is obtainable from a single groupby().agg(['first','max','min','last'])
 Deterministic: no randomness anywhere in this script.
 """
 import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 
 import matplotlib
 matplotlib.use("Agg")
