@@ -127,3 +127,43 @@ def test_the_template_checks_for_zero_selected_markets():
     live here."""
     src = _source()
     assert "n_selected" in src
+
+
+def _load_episodes_kwarg_names():
+    names = set()
+    for kwargs in _call_kwargs(_tree(), "load_episodes"):
+        names.update(kwargs)
+    return names
+
+
+def test_using_the_basis_learning_model_is_paired_with_an_rtds_path():
+    """Naming the `chainlink` STREAM is not the same as loading the oracle.
+
+    `models/normal_qq/fair.py` learns the BTC/USDT-to-BTC/USD basis against
+    the oracle, and it reads the built-in array `ep.chainlink`, which only
+    exists when `load_episodes` is given `rtds_path=`. Passing
+    `streams=("chainlink",)` populates `ep.streams["chainlink"]` instead --
+    a different attribute, which that block never touches.
+
+    The two look interchangeable and are not. With only the stream, every
+    `s` is NaN: the run selects every market, quotes on none, fills nothing,
+    reports a $0.00 headline and exits 0. That shipped, and neither the
+    `require=` check above nor the zero-market check caught it, because the
+    sample was full and only the fills were empty.
+    """
+    if "normal_qq" not in _source():
+        return
+    assert "rtds_path" in _load_episodes_kwarg_names(), (
+        "template uses the basis-learning model but never passes rtds_path= "
+        "to load_episodes; ep.chainlink is then absent and every s is NaN")
+
+
+def test_the_template_checks_for_zero_fills():
+    """Zero markets and zero fills are different silent failures.
+
+    A model that quotes nothing keeps every market and fills none, so the
+    n_selected check passes and the plot is a flat line at zero. The
+    template has to reject that too."""
+    assert "n_fills" in _source(), (
+        "template must fail on a run that selected markets but filled "
+        "nothing -- a flat-zero plot is not a result")
