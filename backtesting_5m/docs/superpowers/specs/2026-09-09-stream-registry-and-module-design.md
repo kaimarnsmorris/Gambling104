@@ -244,6 +244,39 @@ count that looks lower than expected.
 
 ---
 
+## 4a. The harness produces artefacts; it does not draw pictures
+
+**`run()` writes data and stops.** `ledger.parquet`, `markets.parquet`,
+`ticks.parquet`, `summary.json`, `manifest.json`, frozen `blocks/`. No PNGs.
+`Output.plots` is removed.
+
+Two reasons, and the second is the load-bearing one:
+
+1. Investigations differ. What one wants plotted is not what another wants, and
+   a plotting call inside the engine makes the engine responsible for taste.
+2. **A run cannot draw a comparison.** `run()` sees exactly one run, so a
+   hyperparameter sweep — the most common thing anyone actually wants to look
+   at — cannot be plotted from inside it. Every sweep to date has worked around
+   this by re-reading run folders afterwards.
+
+Plotting moves to `harness.report`, a **separate, optional** module that reads
+run folders. It is never called by `run()`. Its loader is multi-run by default:
+
+```python
+from harness.report import load_runs, cumulative_pnl, calibration
+
+runs = load_runs({"e_p=0.01": dir_a, "e_p=0.03": dir_b})   # tidy, `run` column
+cumulative_pnl(runs, "cum.png")                            # overlaid, one per run
+```
+
+Taking a mapping of label → run directory makes side-by-side the *default
+shape* rather than something to be assembled by hand. A single run is the
+one-element case, not a separate code path.
+
+`harness.report` ships only primitives that are genuinely generic — cumulative
+PnL, markout distribution, calibration, PnL by time-to-expiry. Bespoke figures
+belong in the investigation that wants them, composed from the same loader.
+
 ## 4b. Repository layout and how `harness` is imported
 
 Research lives at the **repository root**, not inside the module:
